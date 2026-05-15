@@ -110,6 +110,9 @@ Build the launcher:
 zig build
 ```
 
+The default build optimizes for small release binaries. Use
+`zig build -Doptimize=Debug` for a debug build.
+
 Create `my-tool.config.json`, then stamp it:
 
 ```powershell
@@ -120,6 +123,9 @@ zig-out\bin\zig-launcher-stamp.exe `
 ```
 
 Now `bundle\bin\my-tool.exe` contains both the launcher and the config.
+
+Config files are UTF-8 JSON. A UTF-8 BOM is accepted, but non-UTF-8 config
+bytes are rejected before JSON parsing.
 
 ## Placeholders
 

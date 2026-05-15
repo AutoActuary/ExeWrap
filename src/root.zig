@@ -57,10 +57,16 @@ pub fn readEmbeddedConfig(allocator: std.mem.Allocator, exe_path: []const u8) ![
     const index = lastIndexOfBytes(bytes, &marker) orelse return error.NoEmbeddedConfig;
     const config = normalizeConfigBytes(bytes[index + marker.len ..]);
     if (std.mem.trim(u8, config, " \t\r\n").len == 0) return error.EmptyEmbeddedConfig;
+    try validateConfigBytes(config);
     return config;
 }
 
+pub fn validateConfigBytes(bytes: []const u8) !void {
+    if (!std.unicode.utf8ValidateSlice(normalizeConfigBytes(bytes))) return error.ConfigMustBeUtf8;
+}
+
 pub fn parseConfig(allocator: std.mem.Allocator, bytes: []const u8, paths: RuntimePaths) !Config {
+    try validateConfigBytes(bytes);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, normalizeConfigBytes(bytes), .{});
     const root = switch (parsed.value) {
         .object => |object| object,
@@ -249,6 +255,44 @@ test "normalizes UTF-8 BOM before parsing config" {
 
     try std.testing.expect(config.silent);
     try std.testing.expectEqualStrings("cmd.exe", config.command[0]);
+}
+
+test "rejects non UTF-8 config bytes before JSON parsing" {
+    const allocator = std.testing.allocator;
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+
+    try std.testing.expectError(
+        error.ConfigMustBeUtf8,
+        parseConfig(allocator, "{ \"command\": [\"\xFF\"] }", paths),
+    );
+}
+
+test "accepts UTF-8 config strings" {
+    const allocator = std.testing.allocator;
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    const json =
+        \\{
+        \\  "command": ["cmd.exe", "/C", "echo café"]
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const config = try parseConfig(arena.allocator(), json, paths);
+
+    try std.testing.expectEqualStrings("echo café", config.command[2]);
 }
 
 test "marker bytes match documented UUID" {

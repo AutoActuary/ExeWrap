@@ -2,12 +2,19 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "optimize",
+        "Prioritize performance, safety, or binary size",
+    ) orelse .ReleaseSmall;
 
     const mod = b.addModule("zig_launcher", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = true,
+        .single_threaded = true,
+        .omit_frame_pointer = true,
     });
 
     const launcher = b.addExecutable(.{
@@ -16,6 +23,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = true,
+            .single_threaded = true,
+            .omit_frame_pointer = true,
             .imports = &.{
                 .{ .name = "zig_launcher", .module = mod },
             },
@@ -30,6 +40,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/stamp.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = true,
+            .single_threaded = true,
+            .omit_frame_pointer = true,
             .imports = &.{
                 .{ .name = "zig_launcher", .module = mod },
             },

@@ -22,6 +22,9 @@ renamed without changing the config.
 zig build
 ```
 
+The default build is size-oriented (`ReleaseSmall`, stripped, single-threaded).
+Use `zig build -Doptimize=Debug` when you want a debug binary.
+
 This installs two tools under `zig-out/bin`:
 
 - `zig-launcher.exe`: the self-reading launcher
@@ -42,6 +45,9 @@ For packaging recipes and copy/paste examples, see the
 [user manual](USER_MANUAL.md).
 
 ## Config
+
+Config files are UTF-8 JSON. A UTF-8 BOM is tolerated when reading stamped
+configs, but the embedded config bytes must still be valid UTF-8.
 
 ```json
 {
