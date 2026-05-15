@@ -64,6 +64,9 @@ Fields:
 
 - `terminal`: when `true`, lets a console child show a terminal window.
 - `silent`: when `true`, runs the child with `CREATE_NO_WINDOW` and ignored stdio.
+- `kill_children_on_exit`: when `true` on Windows, runs the child in a Job Object
+  with kill-on-close enabled, so killing the launcher also kills the child
+  process tree.
 - `cwd`: child working directory. Defaults to `{exe_dir}`.
 - `env`: environment variables as either an object or an array of `{ "name", "value" }` entries.
 - `command` or `commandline`: argv list to run.

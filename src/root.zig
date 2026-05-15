@@ -38,6 +38,7 @@ pub const EnvVar = struct {
 
 pub const Config = struct {
     silent: bool,
+    kill_children_on_exit: bool,
     cwd: []const u8,
     command: []const []const u8,
     env: []const EnvVar,
@@ -75,6 +76,7 @@ pub fn parseConfig(allocator: std.mem.Allocator, bytes: []const u8, paths: Runti
 
     const terminal = getBool(root, "terminal") orelse false;
     const silent = getBool(root, "silent") orelse !terminal;
+    const kill_children_on_exit = getBool(root, "kill_children_on_exit") orelse false;
     const cwd_raw = getString(root, "cwd") orelse "{exe_dir}";
     const command_value = root.get("commandline") orelse root.get("command") orelse return error.MissingCommand;
 
@@ -97,6 +99,7 @@ pub fn parseConfig(allocator: std.mem.Allocator, bytes: []const u8, paths: Runti
 
     return .{
         .silent = silent,
+        .kill_children_on_exit = kill_children_on_exit,
         .cwd = try expandPlaceholders(allocator, cwd_raw, paths),
         .command = try command.toOwnedSlice(allocator),
         .env = env,
@@ -254,6 +257,7 @@ test "normalizes UTF-8 BOM before parsing config" {
     );
 
     try std.testing.expect(config.silent);
+    try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("cmd.exe", config.command[0]);
 }
 
@@ -327,11 +331,35 @@ test "parse config expands paths" {
     const config = try parseConfig(arena.allocator(), json, paths);
 
     try std.testing.expect(!config.silent);
+    try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("C:\\apps\\demo", config.cwd);
     try std.testing.expectEqual(@as(usize, 3), config.command.len);
     try std.testing.expectEqualStrings("C:\\apps\\demo\\run.cmd", config.command[2]);
     try std.testing.expectEqualStrings("SCRIPT_HOME", config.env[0].name);
     try std.testing.expectEqualStrings("C:\\apps\\demo", config.env[0].value);
+}
+
+test "parse config accepts kill children on exit option" {
+    const allocator = std.testing.allocator;
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    const json =
+        \\{
+        \\  "kill_children_on_exit": true,
+        \\  "command": ["cmd.exe", "/C", "exit /b 0"]
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const config = try parseConfig(arena.allocator(), json, paths);
+
+    try std.testing.expect(config.kill_children_on_exit);
 }
 
 test "unknown brace groups remain literal for shell scriptblocks" {

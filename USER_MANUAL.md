@@ -174,6 +174,24 @@ Use `silent` when you do not want a console window:
 If neither field is present, the launcher defaults to silent.
 If both are present, `silent` wins.
 
+## Kill Child Processes With The Launcher
+
+On Windows, set `kill_children_on_exit` when the launcher should own the whole
+process tree:
+
+```json
+{
+  "silent": true,
+  "kill_children_on_exit": true,
+  "command": ["powershell.exe", "-NoProfile", "-Command", "python.exe -m my_worker"]
+}
+```
+
+This puts the immediate child process in a Windows Job Object configured with
+kill-on-close. If the launcher process is killed, Windows closes the job handle
+and terminates the child process tree. Leave this option unset or `false` when
+you intentionally want a launched process to survive after the launcher exits.
+
 ## Running Through cmd.exe
 
 Prefer a direct argv list for normal programs. Use `cmd.exe /C` only when you
