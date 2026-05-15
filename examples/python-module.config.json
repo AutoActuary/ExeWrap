@@ -1,0 +1,15 @@
+{
+  "terminal": true,
+  "cwd": "{exe_dir}\\..\\app",
+  "env": {
+    "PYTHONHOME": "{exe_dir}\\..\\python",
+    "PYTHONPATH": "{exe_dir}\\..\\app"
+  },
+  "command": [
+    "{exe_dir}\\..\\python\\python.exe",
+    "-m",
+    "my_module",
+    "--example-arg",
+    "value"
+  ]
+}
