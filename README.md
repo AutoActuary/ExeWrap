@@ -1,18 +1,19 @@
 # overlay-launcher
 
-`overlay-launcher` turns one generic executable into many tiny app launchers by
-stamping a templated JSON config onto the end of the `.exe`.
+`overlay-launcher` is a portable executable wrapper.
 
-Think of it as a symlink with arguments, environment setup, portable paths, and
-Windows `.exe` behavior. That matters because `.exe` files are first-class on
-Windows: users can double-click them, pin them, rename them, assign icons, and
-hand them to tools that do not treat `.cmd`, PowerShell scripts, or shortcuts as
-real applications.
+It gives a script, Python module, or nearby tool a real `.exe` entry point with
+executable-relative paths, environment edits, argument forwarding, and an
+optional icon.
 
-The stamped launcher reads its own overlay, evaluates template expressions such
-as `@{exe_dir}`, and starts the configured child process. It is meant for
-portable bundles where a launcher in `bin\` needs to run a Python module, script,
-or tool stored next to it without hard-coded install paths.
+Use it where shortcuts, `.cmd` files, PowerShell scripts, and symlinks fall
+short: portable app bundles, pinned tools, renamed launchers, iconed executables,
+and programs that expect to start another real executable.
+
+How it works: build one generic launcher, write a templated JSON config, and
+stamp that config onto a copy of the launcher. At runtime the stamped `.exe`
+reads its own config, expands values such as `@{exe_dir}`, and starts the
+configured command.
 
 ## Quick Start
 
@@ -38,11 +39,8 @@ examples\demo-launcher.exe
 ```
 
 The output executable contains both the normal launcher and the appended config.
-You can copy or rename the stamped `.exe`; templates such as `@{exe_dir}` are
-resolved from the final executable path at launch time.
-
-That means one base launcher can produce `my-tool.exe`, `admin-tool.exe`, or
-`report-viewer.exe` simply by stamping different configs.
+You can copy or rename the stamped `.exe`; values such as `@{exe_dir}` resolve
+from the final executable path at launch time.
 
 ## What Gets Stamped
 
