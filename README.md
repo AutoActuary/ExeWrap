@@ -1,13 +1,13 @@
-﻿# zig-launcher
+# overlay-launcher
 
-`zig-launcher` is a tiny Windows launcher written in Zig. The built launcher can
-read configuration appended to its own executable and then run a command near the
-launcher file.
+`overlay-launcher` is a tiny Windows launcher written in Zig. The built launcher
+reads configuration appended to its own executable and then runs a configured
+command near the launcher file.
 
 The overlay format is:
 
 ```text
-zig-launcher.exe + 16-byte marker UUID + UTF-8 JSON config
+overlay-launcher.exe + 16-byte marker UUID + UTF-8 JSON config
 ```
 
 Marker UUID: `8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a`
@@ -27,14 +27,14 @@ Use `zig build -Doptimize=Debug` when you want a debug binary.
 
 This installs two tools under `zig-out/bin`:
 
-- `zig-launcher.exe`: the self-reading launcher
-- `zig-launcher-stamp.exe`: helper that appends a JSON config to a launcher
+- `overlay-launcher.exe`: the self-reading launcher
+- `overlay-launcher-stamp.exe`: helper that appends a JSON config to a launcher
 
 ## Stamp A Launcher
 
 ```powershell
-zig-out\bin\zig-launcher-stamp.exe `
-  zig-out\bin\zig-launcher.exe `
+zig-out\bin\overlay-launcher-stamp.exe `
+  zig-out\bin\overlay-launcher.exe `
   examples\config.json `
   examples\demo-launcher.exe
 ```
@@ -42,7 +42,10 @@ zig-out\bin\zig-launcher-stamp.exe `
 Run `examples\demo-launcher.exe` to execute the stamped command.
 
 For packaging recipes and copy/paste examples, see the
-[user manual](USER_MANUAL.md).
+[user manual](docs/user-manual.md).
+
+For the planned templated-JSON expression language, see the
+[template spec](docs/template-spec.html).
 
 ## Config
 
@@ -76,19 +79,19 @@ If both are present, `silent` wins.
 
 Placeholders:
 
-- `{exe}` or `{exe_path}`: full path to the stamped executable
+- `{exe_path}`: full path to the stamped executable
 - `{exe_dir}`: directory containing the stamped executable
 - `{exe_name}`: file name of the stamped executable
 - `{exe_stem}`: file name without extension
-- `{cwd}` or `{launch_cwd}`: directory the launcher was started from
+- `{cwd}`: directory the launcher was started from
 
 The launcher also injects these environment variables for the child:
 
-- `zig_launcher_EXE`
-- `zig_launcher_DIR`
-- `zig_launcher_NAME`
-- `zig_launcher_STEM`
-- `zig_launcher_LAUNCH_CWD`
+- `OVERLAY_LAUNCHER_EXE`
+- `OVERLAY_LAUNCHER_DIR`
+- `OVERLAY_LAUNCHER_NAME`
+- `OVERLAY_LAUNCHER_STEM`
+- `OVERLAY_LAUNCHER_LAUNCH_CWD`
 
 ## Notes And Prior Art
 
@@ -117,4 +120,3 @@ References:
 - PE overlay behavior is the same family of approach used by self-extracting
   archives and packagers:
   https://stackoverflow.com/questions/5795446/appending-data-to-an-exe
-

@@ -1,6 +1,6 @@
-﻿# zig-launcher User Manual
+# overlay-launcher User Manual
 
-`zig-launcher` turns one generic launcher executable into a renamed, configured
+`overlay-launcher` turns one generic launcher executable into a renamed, configured
 launcher by appending JSON to the end of the `.exe`.
 
 The stamped launcher reads its own config, expands placeholders such as
@@ -116,8 +116,8 @@ The default build optimizes for small release binaries. Use
 Create `my-tool.config.json`, then stamp it:
 
 ```powershell
-zig-out\bin\zig-launcher-stamp.exe `
-  zig-out\bin\zig-launcher.exe `
+zig-out\bin\overlay-launcher-stamp.exe `
+  zig-out\bin\overlay-launcher.exe `
   my-tool.config.json `
   bundle\bin\my-tool.exe
 ```
@@ -134,22 +134,20 @@ Use placeholders anywhere inside `cwd`, `env` values, and `command` entries.
 | Placeholder | Meaning |
 | --- | --- |
 | `{exe_path}` | Full path to the stamped executable |
-| `{exe}` | Alias for `{exe_path}` |
 | `{exe_dir}` | Directory containing the stamped executable |
 | `{exe_name}` | File name of the stamped executable |
 | `{exe_stem}` | File name without extension |
 | `{cwd}` | Directory the launcher was started from |
-| `{launch_cwd}` | Alias for `{cwd}` |
 
 The launcher also sets these environment variables for the child process:
 
 | Variable | Meaning |
 | --- | --- |
-| `zig_launcher_EXE` | Full path to the stamped executable |
-| `zig_launcher_DIR` | Directory containing the stamped executable |
-| `zig_launcher_NAME` | File name of the stamped executable |
-| `zig_launcher_STEM` | File name without extension |
-| `zig_launcher_LAUNCH_CWD` | Directory the launcher was started from |
+| `OVERLAY_LAUNCHER_EXE` | Full path to the stamped executable |
+| `OVERLAY_LAUNCHER_DIR` | Directory containing the stamped executable |
+| `OVERLAY_LAUNCHER_NAME` | File name of the stamped executable |
+| `OVERLAY_LAUNCHER_STEM` | File name without extension |
+| `OVERLAY_LAUNCHER_LAUNCH_CWD` | Directory the launcher was started from |
 
 ## Terminal Or Silent
 
@@ -205,7 +203,7 @@ built-in commands.
   "command": [
     "cmd.exe",
     "/C",
-    "echo Launcher: %zig_launcher_NAME% && dir && pause"
+    "echo Launcher: %OVERLAY_LAUNCHER_NAME% && dir && pause"
   ]
 }
 ```

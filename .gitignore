@@ -2,4 +2,5 @@ zig-cache/
 zig-out/
 .zig-cache/
 *.exe
+*.pdb
 !examples/*.json

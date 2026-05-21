@@ -1,5 +1,5 @@
 const std = @import("std");
-const launcher = @import("zig_launcher");
+const launcher = @import("overlay_launcher");
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -11,7 +11,7 @@ pub fn main() !void {
     if (args.len != 4) {
         const stderr = std.fs.File.stderr();
         try stderr.writeAll(
-            "usage: zig-launcher-stamp <base-exe> <config.json> <output-exe>\n",
+            "usage: overlay-launcher-stamp <base-exe> <config.json> <output-exe>\n",
         );
         std.process.exit(2);
     }

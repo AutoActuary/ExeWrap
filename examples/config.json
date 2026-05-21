@@ -2,7 +2,7 @@
   "terminal": true,
   "cwd": "{exe_dir}",
   "env": {
-    "ZIG_LAUNCHER_EXAMPLE": "launched from {exe_name}",
+    "OVERLAY_LAUNCHER_EXAMPLE": "launched from {exe_name}",
     "SCRIPT_HOME": "{exe_dir}"
   },
   "command": [

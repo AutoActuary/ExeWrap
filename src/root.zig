@@ -107,11 +107,11 @@ pub fn parseConfig(allocator: std.mem.Allocator, bytes: []const u8, paths: Runti
 }
 
 pub fn applyEnvironment(env_map: *std.process.EnvMap, vars: []const EnvVar, paths: RuntimePaths) !void {
-    try env_map.put("ZIG_LAUNCHER_EXE", paths.exe_path);
-    try env_map.put("ZIG_LAUNCHER_DIR", paths.exe_dir);
-    try env_map.put("ZIG_LAUNCHER_NAME", paths.exe_name);
-    try env_map.put("ZIG_LAUNCHER_STEM", paths.exe_stem);
-    try env_map.put("ZIG_LAUNCHER_LAUNCH_CWD", paths.launch_cwd);
+    try env_map.put("OVERLAY_LAUNCHER_EXE", paths.exe_path);
+    try env_map.put("OVERLAY_LAUNCHER_DIR", paths.exe_dir);
+    try env_map.put("OVERLAY_LAUNCHER_NAME", paths.exe_name);
+    try env_map.put("OVERLAY_LAUNCHER_STEM", paths.exe_stem);
+    try env_map.put("OVERLAY_LAUNCHER_LAUNCH_CWD", paths.launch_cwd);
 
     for (vars) |entry| {
         try env_map.put(entry.name, entry.value);
@@ -166,19 +166,11 @@ fn expandPlaceholders(allocator: std.mem.Allocator, input: []const u8, paths: Ru
         value: []const u8,
     };
     const placeholders = [_]Placeholder{
-        .{ .tag = "{exe}", .value = paths.exe_path },
         .{ .tag = "{exe_path}", .value = paths.exe_path },
-        .{ .tag = "{launcher_path}", .value = paths.exe_path },
         .{ .tag = "{exe_dir}", .value = paths.exe_dir },
-        .{ .tag = "{launcher_dir}", .value = paths.exe_dir },
-        .{ .tag = "{app_dir}", .value = paths.exe_dir },
         .{ .tag = "{exe_name}", .value = paths.exe_name },
-        .{ .tag = "{argv0}", .value = paths.exe_name },
         .{ .tag = "{exe_stem}", .value = paths.exe_stem },
-        .{ .tag = "{app_name}", .value = paths.exe_stem },
         .{ .tag = "{cwd}", .value = paths.launch_cwd },
-        .{ .tag = "{launch_cwd}", .value = paths.launch_cwd },
-        .{ .tag = "{initial_cwd}", .value = paths.launch_cwd },
     };
 
     var out: std.ArrayList(u8) = .empty;
