@@ -55,9 +55,9 @@ ExeWrap-stamper.exe --launcher <ExeWrap.exe> --config <config.json> [--icon <log
 `--icon` is optional. When present, the stamp helper writes the icon into the
 output executable before appending the config overlay.
 
-Use the base `ExeWrap.exe` as input when practical. If you stamp an
-already stamped executable, the launcher uses the last embedded start marker and
-config, but the output keeps the earlier overlay bytes and grows unnecessarily.
+You can stamp either the base `ExeWrap.exe` or an already stamped executable.
+When restamping, the stamper replaces the existing embedded config instead of
+appending another copy.
 
 Run the stamped output:
 

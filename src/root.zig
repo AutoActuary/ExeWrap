@@ -79,20 +79,41 @@ pub const Config = struct {
     env: []const EnvVar,
 };
 
+pub const EmbeddedConfigRange = struct {
+    marker_start: usize,
+    config_start: usize,
+    config_end: usize,
+    suffix_start: usize,
+    has_end_marker: bool,
+};
+
 pub fn readEmbeddedConfig(allocator: std.mem.Allocator, exe_path: []const u8) ![]const u8 {
     const bytes = try std.fs.cwd().readFileAlloc(allocator, exe_path, max_exe_bytes);
     return embeddedConfigFromBytes(bytes);
 }
 
 pub fn embeddedConfigFromBytes(bytes: []const u8) ![]const u8 {
-    const index = std.mem.lastIndexOf(u8, bytes, config_start_marker) orelse return error.NoEmbeddedConfig;
-    const config_start = index + config_start_marker.len;
-    const remaining = bytes[config_start..];
-    const config_end = std.mem.indexOf(u8, remaining, config_end_marker) orelse remaining.len;
-    const config = normalizeConfigBytes(remaining[0..config_end]);
+    const range = embeddedConfigRangeFromBytes(bytes) orelse return error.NoEmbeddedConfig;
+    const config = normalizeConfigBytes(bytes[range.config_start..range.config_end]);
     if (std.mem.trim(u8, config, " \t\r\n").len == 0) return error.EmptyEmbeddedConfig;
     try validateConfigBytes(config);
     return config;
+}
+
+pub fn embeddedConfigRangeFromBytes(bytes: []const u8) ?EmbeddedConfigRange {
+    const marker_start = std.mem.lastIndexOf(u8, bytes, config_start_marker) orelse return null;
+    const config_start = marker_start + config_start_marker.len;
+    const remaining = bytes[config_start..];
+    const end_relative = std.mem.indexOf(u8, remaining, config_end_marker);
+    const config_end = if (end_relative) |index| config_start + index else bytes.len;
+    const suffix_start = if (end_relative) |_| config_end else bytes.len;
+    return .{
+        .marker_start = marker_start,
+        .config_start = config_start,
+        .config_end = config_end,
+        .suffix_start = suffix_start,
+        .has_end_marker = end_relative != null,
+    };
 }
 
 pub fn validateConfigBytes(bytes: []const u8) !void {
@@ -583,10 +604,32 @@ test "embedded config reads to EOF when end marker is absent" {
     try std.testing.expectEqualStrings("{\"command\":[\"cmd.exe\"]}", config);
 }
 
+test "embedded config range reads to EOF when end marker is absent" {
+    const bytes = "base bytes" ++ config_start_marker ++ "{\"command\":[\"cmd.exe\"]}";
+    const range = embeddedConfigRangeFromBytes(bytes).?;
+    try std.testing.expectEqual(@as(usize, "base bytes".len), range.marker_start);
+    try std.testing.expectEqual(@as(usize, "base bytes".len + config_start_marker.len), range.config_start);
+    try std.testing.expectEqual(@as(usize, bytes.len), range.config_end);
+    try std.testing.expectEqual(@as(usize, bytes.len), range.suffix_start);
+    try std.testing.expect(!range.has_end_marker);
+}
+
 test "embedded config reads between start and end markers" {
     const bytes = "base bytes" ++ config_start_marker ++ "{\"command\":[\"cmd.exe\"]}" ++ config_end_marker ++ "icon or other bytes";
     const config = try embeddedConfigFromBytes(bytes);
     try std.testing.expectEqualStrings("{\"command\":[\"cmd.exe\"]}", config);
+}
+
+test "embedded config range reads between start and end markers" {
+    const config_text = "{\"command\":[\"cmd.exe\"]}";
+    const suffix = config_end_marker ++ "icon or other bytes";
+    const bytes = "base bytes" ++ config_start_marker ++ config_text ++ suffix;
+    const range = embeddedConfigRangeFromBytes(bytes).?;
+    try std.testing.expectEqual(@as(usize, "base bytes".len), range.marker_start);
+    try std.testing.expectEqual(@as(usize, "base bytes".len + config_start_marker.len), range.config_start);
+    try std.testing.expectEqual(@as(usize, "base bytes".len + config_start_marker.len + config_text.len), range.config_end);
+    try std.testing.expectEqual(range.config_end, range.suffix_start);
+    try std.testing.expect(range.has_end_marker);
 }
 
 test "embedded config uses the last start marker" {

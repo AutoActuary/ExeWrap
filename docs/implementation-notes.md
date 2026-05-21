@@ -32,10 +32,9 @@ Explorer or another process.
 
 The launcher searches for the last start marker in its own bytes. Config runs
 from after that marker to the first following end marker, or to EOF if no end
-marker is present. That makes the active config independent of the output file
-name and means a re-stamped file will use the newest appended config. The user
-docs still recommend stamping from the clean base executable because re-stamping
-an already stamped file keeps old overlay bytes and grows the output.
+marker is present. The stamper uses the same range detection when restamping:
+it replaces the active config bytes and preserves the marker/suffix layout
+instead of appending another overlay.
 
 The start marker is the ASCII UUID string:
 
