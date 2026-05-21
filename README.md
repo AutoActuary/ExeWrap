@@ -26,8 +26,8 @@ Create a launcher from the included example config:
 
 ```powershell
 zig-out\bin\overlay-launcher-stamp.exe `
-  zig-out\bin\overlay-launcher.exe `
-  examples\config.json `
+  --launcher zig-out\bin\overlay-launcher.exe `
+  --config examples\config.json `
   examples\demo-launcher.exe
 ```
 
@@ -74,7 +74,8 @@ that the config bytes are UTF-8 before writing the output file.
 `zig build` installs two tools under `zig-out\bin`:
 
 - `overlay-launcher.exe`: the self-reading launcher.
-- `overlay-launcher-stamp.exe`: a helper that appends config to a launcher.
+- `overlay-launcher-stamp.exe`: a helper that stamps config, and optionally an
+  icon, onto a launcher.
 
 The default build is size-oriented: `ReleaseSmall`, stripped, single-threaded,
 and built with the Windows GUI subsystem so the launcher itself does not flash a
@@ -255,6 +256,31 @@ The repository also includes ready-to-copy examples:
 
 - [examples/config.json](examples/config.json)
 - [examples/python-module.config.json](examples/python-module.config.json)
+
+## Stamping And Icons
+
+The stamp helper accepts named options:
+
+```powershell
+zig-out\bin\overlay-launcher-stamp.exe `
+  --launcher zig-out\bin\overlay-launcher.exe `
+  --config my-tool.config.json `
+  --icon logo.ico `
+  bundle\bin\my-tool.exe
+```
+
+`--icon` is optional. When present, the helper updates the output executable's
+Windows icon resource before appending the config overlay.
+
+The helper is only a convenience. Any language can stamp a launcher:
+
+1. Copy `overlay-launcher.exe` to the desired output path.
+2. Optionally update the copied executable's Windows resources, such as its icon.
+3. Append the ASCII start marker
+   `8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a`.
+4. Append the UTF-8 templated JSON config bytes.
+5. If more unrelated bytes must follow the config, append the ASCII end marker
+   `ce3beca3-7ed2-40a4-9133-f82198be1d7b` first, then append the extra bytes.
 
 ## Troubleshooting
 
