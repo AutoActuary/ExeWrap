@@ -53,8 +53,8 @@ overlay-launcher-stamp <base-exe> <config.json> <output-exe>
 ```
 
 Use the base `overlay-launcher.exe` as input when practical. If you stamp an
-already stamped executable, the launcher uses the last embedded marker/config,
-but the output keeps the earlier overlay bytes and grows unnecessarily.
+already stamped executable, the launcher uses the last embedded start marker and
+config, but the output keeps the earlier overlay bytes and grows unnecessarily.
 
 Run the stamped output:
 
