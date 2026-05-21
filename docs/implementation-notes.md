@@ -1,4 +1,4 @@
-# overlay-launcher Implementation Notes
+# ExeWrap Implementation Notes
 
 This document records the design rationale behind the templated JSON launcher
 implemented from [template-spec.html](template-spec.html). It is for maintainers

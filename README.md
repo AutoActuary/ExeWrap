@@ -1,6 +1,6 @@
-# overlay-launcher
+# ExeWrap
 
-`overlay-launcher` is a portable executable wrapper.
+`ExeWrap` is a portable executable wrapper.
 
 It turns a folder of runtime files, dependencies, and entry scripts into a
 normal Windows `.exe` launcher with its own icon, working directory, environment
@@ -18,30 +18,29 @@ The stamped executable:
 
 ## Get The Tools
 
-Published GitHub releases attach Windows zip files for:
+Published GitHub releases provide builds for:
 
 - `windows-x64`
 - `windows-x86`
 - `windows-arm64`
 
-Each release package contains:
+Each release build contains:
 
 ```text
-overlay-launcher.exe
-overlay-launcher-stamp.exe
-README.md
+ExeWrap.exe
+ExeWrap-stamper.exe
 ```
 
-Use `overlay-launcher.exe` as the generic base launcher. Use
-`overlay-launcher-stamp.exe` to make your app-specific executable.
+Use `ExeWrap.exe` as the generic base launcher. Use
+`ExeWrap-stamper.exe` to make your app-specific executable.
 
 ## Stamp A Launcher
 
 Create a config file, then stamp it onto the base executable:
 
 ```powershell
-overlay-launcher-stamp.exe `
-  --launcher overlay-launcher.exe `
+ExeWrap-stamper.exe `
+  --launcher ExeWrap.exe `
   --config my-tool.config.json `
   --icon logo.ico `
   bundle\bin\my-tool.exe
@@ -50,13 +49,13 @@ overlay-launcher-stamp.exe `
 Arguments are:
 
 ```text
-overlay-launcher-stamp.exe --launcher <overlay-launcher.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
+ExeWrap-stamper.exe --launcher <ExeWrap.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
 ```
 
 `--icon` is optional. When present, the stamp helper writes the icon into the
 output executable before appending the config overlay.
 
-Use the base `overlay-launcher.exe` as input when practical. If you stamp an
+Use the base `ExeWrap.exe` as input when practical. If you stamp an
 already stamped executable, the launcher uses the last embedded start marker and
 config, but the output keeps the earlier overlay bytes and grows unnecessarily.
 
@@ -448,10 +447,10 @@ killed, Windows closes the job handle and terminates the child process tree.
 
 ## Stamp Without The Helper
 
-`overlay-launcher-stamp.exe` is not required by the file format. Other tools can
+`ExeWrap-stamper.exe` is not required by the file format. Other tools can
 produce the same output by doing the same byte-level steps:
 
-1. Copy `overlay-launcher.exe` to the desired output path.
+1. Copy `ExeWrap.exe` to the desired output path.
 2. Optionally update the copied executable's Windows resources, such as its icon.
 3. Append the ASCII start marker
    `8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a`.
@@ -480,8 +479,8 @@ zig build
 The build writes:
 
 ```text
-zig-out\bin\overlay-launcher.exe
-zig-out\bin\overlay-launcher-stamp.exe
+zig-out\bin\ExeWrap.exe
+zig-out\bin\ExeWrap-stamper.exe
 ```
 
 The default build is size-oriented: `ReleaseSmall`, stripped, single-threaded,
@@ -498,8 +497,8 @@ zig build -Doptimize=Debug
 
 ### The launcher reports `NoEmbeddedConfig`
 
-You are probably running the base `overlay-launcher.exe` instead of a stamped
-output file. Re-run `overlay-launcher-stamp.exe` and launch the output path.
+You are probably running the base `ExeWrap.exe` instead of a stamped
+output file. Re-run `ExeWrap-stamper.exe` and launch the output path.
 
 ### Stamping fails with `ConfigMustBeUtf8`
 

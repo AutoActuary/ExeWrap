@@ -1,4 +1,4 @@
-name: Release Windows Binaries
+name: Release ExeWrap Binaries
 
 on:
   release:
@@ -48,12 +48,11 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.event.release.tag_name }}"
-          $assetBase = "overlay-launcher-$tag-${{ matrix.label }}"
+          $assetBase = "ExeWrap-$tag-${{ matrix.label }}"
           $packageDir = Join-Path "dist" $assetBase
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-          Copy-Item zig-out/bin/overlay-launcher.exe $packageDir
-          Copy-Item zig-out/bin/overlay-launcher-stamp.exe $packageDir
-          Copy-Item README.md $packageDir
+          Copy-Item zig-out/bin/ExeWrap.exe $packageDir
+          Copy-Item zig-out/bin/ExeWrap-stamper.exe $packageDir
           Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath "dist/$assetBase.zip" -Force
           $hash = Get-FileHash "dist/$assetBase.zip" -Algorithm SHA256
           "$($hash.Hash.ToLowerInvariant())  $assetBase.zip" | Set-Content "dist/$assetBase.zip.sha256" -Encoding ascii
@@ -64,5 +63,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ github.event.release.tag_name }}"
-          $assetBase = "overlay-launcher-$tag-${{ matrix.label }}"
+          $assetBase = "ExeWrap-$tag-${{ matrix.label }}"
           gh release upload $tag "dist/$assetBase.zip" "dist/$assetBase.zip.sha256" --clobber

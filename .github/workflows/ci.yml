@@ -73,8 +73,8 @@ jobs:
       - name: Upload CI binaries
         uses: actions/upload-artifact@v6
         with:
-          name: overlay-launcher-${{ matrix.label }}
+          name: ExeWrap-${{ matrix.label }}
           path: |
-            zig-out/bin/overlay-launcher.exe
-            zig-out/bin/overlay-launcher-stamp.exe
+            zig-out/bin/ExeWrap.exe
+            zig-out/bin/ExeWrap-stamper.exe
           if-no-files-found: error

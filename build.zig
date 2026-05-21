@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
         "Prioritize performance, safety, or binary size",
     ) orelse .ReleaseSmall;
 
-    const mod = b.addModule("overlay_launcher", .{
+    const mod = b.addModule("exewrap", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const launcher = b.addExecutable(.{
-        .name = "overlay-launcher",
+        .name = "ExeWrap",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
             .omit_frame_pointer = true,
             .imports = &.{
-                .{ .name = "overlay_launcher", .module = mod },
+                .{ .name = "exewrap", .module = mod },
             },
         }),
     });
@@ -35,7 +35,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(launcher);
 
     const stamp = b.addExecutable(.{
-        .name = "overlay-launcher-stamp",
+        .name = "ExeWrap-stamper",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/stamp.zig"),
             .target = target,
@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
             .omit_frame_pointer = true,
             .imports = &.{
-                .{ .name = "overlay_launcher", .module = mod },
+                .{ .name = "exewrap", .module = mod },
             },
         }),
     });

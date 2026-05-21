@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const launcher = @import("overlay_launcher");
+const launcher = @import("exewrap");
 const windows = std.os.windows;
 
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x00002000;
