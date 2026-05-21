@@ -97,12 +97,12 @@ Top-level fields:
 | `command` | Required argv array to run. Each array item is one child-process argument. |
 | `cwd` | Child working directory. Defaults to the stamped executable directory. |
 | `env` | Ordered object of environment edits. Later values can read earlier edits. |
-| `terminal` | When `true`, the child can inherit/use a visible console. When omitted or `false`, the child is started with no window and ignored stdio. |
+| `terminal` | When omitted or `true`, the child can inherit/use a visible console. When `false`, the child is started with no window and ignored stdio. |
 | `kill_children_on_exit` | When `true`, Windows kills the child process tree if the launcher dies. |
-| `error_on_missing_env` | When `true`, `@{env:"NAME"}` fails if `NAME` is not set. |
-| `error_on_arg_out_of_bounds` | When `true`, `@{args:N}` fails if that user argument is missing. |
+| `error_on_missing_env` | When `true`, `@{env:"NAME"}` fails if `NAME` is not set. When omitted or `false`, missing env values resolve to an empty string. |
+| `error_on_arg_out_of_bounds` | When `true`, `@{args:N}` fails if that user argument is missing. When omitted or `false`, missing args resolve to an empty string. |
 
-If `terminal` is omitted, it defaults to `false`.
+If `terminal` is omitted, it defaults to `true`.
 
 ## Command Arguments
 

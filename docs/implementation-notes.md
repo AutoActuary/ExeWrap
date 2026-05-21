@@ -207,10 +207,9 @@ an unavoidable console flash from the launcher itself.
 
 Child visibility is controlled at child-process creation time:
 
-- `terminal: false` or an omitted `terminal` sets `CREATE_NO_WINDOW` and ignores
-  stdin/stdout/stderr.
-- `terminal: true` lets the child inherit stdio and use a visible console when
-  the child program creates or attaches to one.
+- `terminal: true` or an omitted `terminal` lets the child inherit stdio and use
+  a visible console when the child program creates or attaches to one.
+- `terminal: false` sets `CREATE_NO_WINDOW` and ignores stdin/stdout/stderr.
 
 `kill_children_on_exit` uses a Windows Job Object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The child is spawned suspended, assigned to
