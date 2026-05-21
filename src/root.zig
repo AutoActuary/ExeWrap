@@ -378,6 +378,7 @@ const DuplicateKeyScanner = struct {
     fn skipObject(self: *DuplicateKeyScanner) anyerror!void {
         self.index += 1;
         var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
         self.skipWhitespace();
         if (self.consume('}')) return;
 
@@ -514,14 +515,6 @@ fn getBool(object: std.json.ObjectMap, key: []const u8) ?bool {
     const value = object.get(key) orelse return null;
     return switch (value) {
         .bool => |b| b,
-        else => null,
-    };
-}
-
-fn getString(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = object.get(key) orelse return null;
-    return switch (value) {
-        .string => |s| s,
         else => null,
     };
 }
@@ -876,4 +869,12 @@ test "rejects unsafe list contexts object key templates and duplicate keys" {
         "{\"command\":[\"one\"],\"command\":[\"two\"]}",
         .{ .paths = paths, .args = &.{}, .env_map = &env_map },
     ));
+}
+
+test "duplicate key scanner releases temporary object maps" {
+    const allocator = std.testing.allocator;
+    try rejectDuplicateKeys(
+        allocator,
+        "{\"a\":1,\"b\":{\"c\":2,\"d\":3},\"e\":[{\"f\":4},{\"g\":5}]}",
+    );
 }

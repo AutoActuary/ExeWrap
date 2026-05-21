@@ -204,6 +204,7 @@ const Tokenizer = struct {
         self.index += 1;
 
         var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
         while (self.index < self.input.len) {
             const c = self.input[self.index];
             switch (c) {
@@ -270,6 +271,7 @@ const Parser = struct {
     fn parseExpression(self: *Parser) anyerror!Expression {
         const source = try self.parseSource();
         var transforms: std.ArrayList(Transform) = .empty;
+        errdefer transforms.deinit(self.allocator);
 
         while (self.current().tag == .colon) {
             _ = self.advance();
@@ -640,6 +642,7 @@ fn isListTransform(name: []const u8) bool {
 
 fn concat2(ctx: *EvalContext, a: []const u8, b: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     try out.appendSlice(ctx.allocator, a);
     try out.appendSlice(ctx.allocator, b);
     return try out.toOwnedSlice(ctx.allocator);
@@ -665,6 +668,7 @@ fn replaceByte(ctx: *EvalContext, input: []const u8, from: u8, to: u8) ![]const 
 
 fn jsonEscape(ctx: *EvalContext, input: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     for (input) |c| {
         if (c == '"') {
             try out.appendSlice(ctx.allocator, "\\\"");
@@ -797,6 +801,7 @@ fn joinPath(ctx: *EvalContext, base: []const u8, part: []const u8) ![]const u8 {
     if (trimmed_part.len == 0) return try ctx.allocator.dupe(u8, trimmed_base);
 
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     try out.appendSlice(ctx.allocator, trimmed_base);
     if (trimmed_base.len == 0 or !isPathSeparator(trimmed_base[trimmed_base.len - 1])) {
         try out.append(ctx.allocator, preferredDirSep(ctx, trimmed_base));
@@ -824,6 +829,7 @@ fn normalizePath(ctx: *EvalContext, input: []const u8) ![]const u8 {
     const sep = if (ctx.metadata.dir_sep.len > 0) ctx.metadata.dir_sep[0] else '\\';
     const root_len = pathRootLength(input);
     var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(ctx.allocator);
 
     var i = root_len;
     while (i < input.len) {
@@ -844,8 +850,11 @@ fn normalizePath(ctx: *EvalContext, input: []const u8) ![]const u8 {
     }
 
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     if (root_len > 0) {
-        try out.appendSlice(ctx.allocator, try replaceSeparators(ctx, input[0..root_len], sep));
+        const normalized_root = try replaceSeparators(ctx, input[0..root_len], sep);
+        defer ctx.allocator.free(normalized_root);
+        try out.appendSlice(ctx.allocator, normalized_root);
     }
 
     for (parts.items, 0..) |part, index| {
@@ -873,6 +882,7 @@ fn prependEnv(ctx: *EvalContext, current: []const u8, entry: []const u8) ![]cons
     if (entry.len == 0) return try ctx.allocator.dupe(u8, current);
     if (current.len == 0) return try ctx.allocator.dupe(u8, entry);
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     try out.appendSlice(ctx.allocator, entry);
     try out.appendSlice(ctx.allocator, ctx.metadata.path_sep);
     try out.appendSlice(ctx.allocator, current);
@@ -883,6 +893,7 @@ fn appendEnv(ctx: *EvalContext, current: []const u8, entry: []const u8) ![]const
     if (entry.len == 0) return try ctx.allocator.dupe(u8, current);
     if (current.len == 0) return try ctx.allocator.dupe(u8, entry);
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     try out.appendSlice(ctx.allocator, current);
     try out.appendSlice(ctx.allocator, ctx.metadata.path_sep);
     try out.appendSlice(ctx.allocator, entry);
@@ -890,8 +901,10 @@ fn appendEnv(ctx: *EvalContext, current: []const u8, entry: []const u8) ![]const
 }
 
 fn removeEnv(ctx: *EvalContext, current: []const u8, entry: []const u8) ![]const u8 {
-    const parts = try splitEnvList(ctx, current);
+    var parts = try splitEnvList(ctx, current);
+    defer parts.deinit(ctx.allocator);
     var kept: std.ArrayList([]const u8) = .empty;
+    defer kept.deinit(ctx.allocator);
     for (parts.items) |part| {
         if (!std.mem.eql(u8, part, entry)) try kept.append(ctx.allocator, part);
     }
@@ -899,9 +912,12 @@ fn removeEnv(ctx: *EvalContext, current: []const u8, entry: []const u8) ![]const
 }
 
 fn uniqueEnv(ctx: *EvalContext, current: []const u8) ![]const u8 {
-    const parts = try splitEnvList(ctx, current);
+    var parts = try splitEnvList(ctx, current);
+    defer parts.deinit(ctx.allocator);
     var seen = std.StringHashMap(void).init(ctx.allocator);
+    defer seen.deinit();
     var kept: std.ArrayList([]const u8) = .empty;
+    defer kept.deinit(ctx.allocator);
     for (parts.items) |part| {
         if (seen.contains(part)) continue;
         try seen.put(part, {});
@@ -912,6 +928,7 @@ fn uniqueEnv(ctx: *EvalContext, current: []const u8) ![]const u8 {
 
 fn splitEnvList(ctx: *EvalContext, current: []const u8) !std.ArrayList([]const u8) {
     var parts: std.ArrayList([]const u8) = .empty;
+    errdefer parts.deinit(ctx.allocator);
     if (current.len == 0) return parts;
 
     var it = std.mem.splitSequence(u8, current, ctx.metadata.path_sep);
@@ -924,6 +941,7 @@ fn splitEnvList(ctx: *EvalContext, current: []const u8) !std.ArrayList([]const u
 fn joinEnvList(ctx: *EvalContext, entries: []const []const u8) ![]const u8 {
     if (entries.len == 0) return "";
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
     for (entries, 0..) |entry, index| {
         if (index > 0) try out.appendSlice(ctx.allocator, ctx.metadata.path_sep);
         try out.appendSlice(ctx.allocator, entry);
@@ -1131,6 +1149,25 @@ test "environment list transforms preserve order and avoid empty-list separators
     try expectStringValue("C:\\A;;C:\\B", try evaluate("env:\"PATH\":unique_env", &ctx));
     try expectStringValue("C:\\Only", try evaluate("env:\"EMPTY\":prepend_env(\"C:\\\\Only\")", &ctx));
     try expectStringValue("", try evaluate("env:\"EMPTY\":append_env(\"\")", &ctx));
+}
+
+test "path and env helpers release temporary containers" {
+    const allocator = std.testing.allocator;
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    var ctx = testContext(allocator, &env, &.{});
+
+    const normalized = try normalizePath(&ctx, "C:\\A\\.\\B\\..\\C");
+    defer allocator.free(normalized);
+    try std.testing.expectEqualStrings("C:\\A\\C", normalized);
+
+    const removed = try removeEnv(&ctx, "C:\\A;C:\\B;C:\\A", "C:\\B");
+    defer allocator.free(removed);
+    try std.testing.expectEqualStrings("C:\\A;C:\\A", removed);
+
+    const unique = try uniqueEnv(&ctx, "C:\\A;C:\\B;C:\\A");
+    defer allocator.free(unique);
+    try std.testing.expectEqualStrings("C:\\A;C:\\B", unique);
 }
 
 test "invalid syntax unknown names and wrong types fail explicitly" {
