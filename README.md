@@ -2,13 +2,10 @@
 
 `overlay-launcher` is a portable executable wrapper.
 
-It gives a script, Python module, or nearby tool a real Windows `.exe` entry
-point with executable-relative paths, environment edits, argument forwarding,
-and an optional icon.
-
-Use it where shortcuts, `.cmd` files, PowerShell scripts, and symlinks fall
-short: portable app bundles, pinned tools, renamed launchers, iconed
-executables, and programs that expect to start another real executable.
+It turns a script, Python module, or folder-local tool into a normal Windows
+`.exe` launcher with its own icon, working directory, environment edits, and
+argument forwarding. Use it for portable app bundles and pinned/renamed tools
+where shortcuts, `.cmd` files, PowerShell scripts, or symlinks are too limited.
 
 The stamped executable:
 
