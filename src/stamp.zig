@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const launcher = @import("overlay_launcher");
+const launcher = @import("exewrap");
 
 const max_config_bytes = 1024 * 1024;
 const icon_type = 1;
@@ -106,7 +106,7 @@ fn parseArgs(args: []const [:0]u8) !StampOptions {
 fn writeUsage() !void {
     const stderr = std.fs.File.stderr();
     try stderr.writeAll(
-        \\usage: overlay-launcher-stamp.exe --launcher <overlay-launcher.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
+        \\usage: ExeWrap-stamper.exe --launcher <ExeWrap.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
         \\
     );
 }

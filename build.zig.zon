@@ -1,7 +1,7 @@
 .{
-    .name = .overlay_launcher,
+    .name = .exewrap,
     .version = "0.0.0",
-    .fingerprint = 0xa86b25c597697b36, // Changing this has security and trust implications.
+    .fingerprint = 0x7f3fc46c27cd6aa2,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{},
     .paths = .{
