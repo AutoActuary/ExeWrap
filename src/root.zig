@@ -4,14 +4,10 @@ pub const template_scan = @import("template_scan.zig");
 pub const template_expr = @import("template_expr.zig");
 
 pub const marker_uuid = "8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a";
-pub const marker_len = 16;
+pub const end_marker_uuid = "ce3beca3-7ed2-40a4-9133-f82198be1d7b";
+pub const config_start_marker = marker_uuid;
+pub const config_end_marker = end_marker_uuid;
 pub const max_exe_bytes = 512 * 1024 * 1024;
-
-const marker_xor_key: u8 = 0xa7;
-const encoded_marker = [_]u8{
-    0x2b, 0xa9, 0x2a, 0xeb, 0x95, 0x08, 0xe8, 0x7f,
-    0x3b, 0xcf, 0xcd, 0xa8, 0x30, 0x48, 0x4c, 0xcd,
-};
 
 pub const RuntimePaths = struct {
     exe_path: []const u8,
@@ -83,19 +79,17 @@ pub const Config = struct {
     env: []const EnvVar,
 };
 
-pub fn markerBytes() [marker_len]u8 {
-    var out: [marker_len]u8 = undefined;
-    for (&out, encoded_marker) |*dest, encoded| {
-        dest.* = encoded ^ marker_xor_key;
-    }
-    return out;
-}
-
 pub fn readEmbeddedConfig(allocator: std.mem.Allocator, exe_path: []const u8) ![]const u8 {
     const bytes = try std.fs.cwd().readFileAlloc(allocator, exe_path, max_exe_bytes);
-    const marker = markerBytes();
-    const index = lastIndexOfBytes(bytes, &marker) orelse return error.NoEmbeddedConfig;
-    const config = normalizeConfigBytes(bytes[index + marker.len ..]);
+    return embeddedConfigFromBytes(bytes);
+}
+
+pub fn embeddedConfigFromBytes(bytes: []const u8) ![]const u8 {
+    const index = std.mem.lastIndexOf(u8, bytes, config_start_marker) orelse return error.NoEmbeddedConfig;
+    const config_start = index + config_start_marker.len;
+    const remaining = bytes[config_start..];
+    const config_end = std.mem.indexOf(u8, remaining, config_end_marker) orelse remaining.len;
+    const config = normalizeConfigBytes(remaining[0..config_end]);
     if (std.mem.trim(u8, config, " \t\r\n").len == 0) return error.EmptyEmbeddedConfig;
     try validateConfigBytes(config);
     return config;
@@ -517,18 +511,6 @@ fn normalizeConfigBytes(bytes: []const u8) []const u8 {
     return out;
 }
 
-fn lastIndexOfBytes(haystack: []const u8, needle: []const u8) ?usize {
-    if (needle.len == 0 or haystack.len < needle.len) return null;
-
-    var i = haystack.len - needle.len;
-    while (true) {
-        if (std.mem.eql(u8, haystack[i .. i + needle.len], needle)) return i;
-        if (i == 0) break;
-        i -= 1;
-    }
-    return null;
-}
-
 test "normalizes UTF-8 BOM before parsing config" {
     const allocator = std.testing.allocator;
     const paths = RuntimePaths{
@@ -590,13 +572,27 @@ test "accepts UTF-8 config strings" {
     try std.testing.expectEqualStrings("echo café", config.command[2]);
 }
 
-test "marker bytes match documented UUID" {
-    const marker = markerBytes();
-    const expected = [_]u8{
-        0x8c, 0x0e, 0x8d, 0x4c, 0x32, 0xaf, 0x4f, 0xd8,
-        0x9c, 0x68, 0x6a, 0x0f, 0x97, 0xef, 0xeb, 0x6a,
-    };
-    try std.testing.expectEqualSlices(u8, &expected, &marker);
+test "overlay markers are documented ASCII UUID strings" {
+    try std.testing.expectEqualStrings("8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a", config_start_marker);
+    try std.testing.expectEqualStrings("ce3beca3-7ed2-40a4-9133-f82198be1d7b", config_end_marker);
+}
+
+test "embedded config reads to EOF when end marker is absent" {
+    const bytes = "base bytes" ++ config_start_marker ++ "{\"command\":[\"cmd.exe\"]}";
+    const config = try embeddedConfigFromBytes(bytes);
+    try std.testing.expectEqualStrings("{\"command\":[\"cmd.exe\"]}", config);
+}
+
+test "embedded config reads between start and end markers" {
+    const bytes = "base bytes" ++ config_start_marker ++ "{\"command\":[\"cmd.exe\"]}" ++ config_end_marker ++ "icon or other bytes";
+    const config = try embeddedConfigFromBytes(bytes);
+    try std.testing.expectEqualStrings("{\"command\":[\"cmd.exe\"]}", config);
+}
+
+test "embedded config uses the last start marker" {
+    const bytes = "old" ++ config_start_marker ++ "{}" ++ "new" ++ config_start_marker ++ "{\"command\":[\"cmd.exe\"]}";
+    const config = try embeddedConfigFromBytes(bytes);
+    try std.testing.expectEqualStrings("{\"command\":[\"cmd.exe\"]}", config);
 }
 
 test "parse config expands paths" {

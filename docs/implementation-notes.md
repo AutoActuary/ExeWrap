@@ -22,7 +22,7 @@ Windows PE executables can carry extra bytes after the mapped image. The launche
 uses that overlay area as the config carrier:
 
 ```text
-base launcher exe + marker bytes + config bytes
+base launcher exe + ASCII start marker + config bytes
 ```
 
 This keeps the runtime executable normal and avoids editing Windows resources,
@@ -30,21 +30,28 @@ generating per-app source files, or requiring a packaging format. A stamped
 launcher is still just an `.exe` that can be copied, renamed, and launched by
 Explorer or another process.
 
-The launcher searches for the last marker in its own bytes. That makes the
-active config independent of the output file name and means a re-stamped file
-will use the newest appended config. The user docs still recommend stamping from
-the clean base executable because re-stamping an already stamped file keeps old
-overlay bytes and grows the output.
+The launcher searches for the last start marker in its own bytes. Config runs
+from after that marker to the first following end marker, or to EOF if no end
+marker is present. That makes the active config independent of the output file
+name and means a re-stamped file will use the newest appended config. The user
+docs still recommend stamping from the clean base executable because re-stamping
+an already stamped file keeps old overlay bytes and grows the output.
 
-The marker UUID is documented as:
+The start marker is the ASCII UUID string:
 
 ```text
 8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a
 ```
 
-The executable stores the marker constant XOR-encoded and decodes it at runtime.
-That avoids embedding the literal marker byte sequence in the launcher image and
-accidentally finding the implementation constant instead of the appended overlay.
+The optional end marker is the ASCII UUID string:
+
+```text
+ce3beca3-7ed2-40a4-9133-f82198be1d7b
+```
+
+The default stamp helper omits the end marker because the config is written at
+EOF. Other stampers can write the end marker when they need to append unrelated
+data after the config.
 
 ## Why Templated JSON Instead Of A Script
 
@@ -256,7 +263,7 @@ The tests are split by layer:
 - `src/template_expr.zig`: tokenizer/parser behavior, base values, path/string
   transforms, environment lookup strictness, argument slicing, env-list
   transforms, and wrong-type failures.
-- `src/root.zig`: UTF-8/BOM handling, marker bytes, config parsing, command
+- `src/root.zig`: UTF-8/BOM handling, overlay markers, config parsing, command
   splicing, environment mutation order, strict failures, duplicate keys, object
   key templates, and unsafe list contexts.
 

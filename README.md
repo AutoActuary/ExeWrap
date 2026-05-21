@@ -49,19 +49,25 @@ That means one base launcher can produce `my-tool.exe`, `admin-tool.exe`, or
 The overlay format is:
 
 ```text
-overlay-launcher.exe + 16-byte marker UUID + UTF-8 templated JSON config
+overlay-launcher.exe + ASCII start marker + UTF-8 templated JSON config
 ```
 
-Marker UUID:
+Start marker:
 
 ```text
 8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a
 ```
 
-The marker is stored as the binary UUID bytes, not the ASCII UUID string. At
-runtime the launcher searches from the end of its own file and uses the bytes
-after the last marker as config. The stamp helper validates that the config bytes
-are UTF-8 before writing the output file.
+Optional end marker:
+
+```text
+ce3beca3-7ed2-40a4-9133-f82198be1d7b
+```
+
+At runtime the launcher searches from the end of its own file for the last start
+marker. Config bytes run from after that marker to the following end marker, or
+to the end of the file when no end marker is present. The stamp helper validates
+that the config bytes are UTF-8 before writing the output file.
 
 ## Build Outputs
 

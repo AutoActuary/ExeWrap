@@ -23,8 +23,7 @@ pub fn main() !void {
     const output = try std.fs.cwd().createFile(args[3], .{ .truncate = true });
     defer output.close();
 
-    const marker = launcher.markerBytes();
     try output.writeAll(base);
-    try output.writeAll(&marker);
+    try output.writeAll(launcher.config_start_marker);
     try output.writeAll(config);
 }
