@@ -101,8 +101,9 @@ code pages, and other non-utf-8 byte sequences are rejected.
 
 If `terminal` is omitted, it defaults to `true`.
 
-The launcher rejects duplicate JSON keys before parsing the config. Object keys
-are literal names and cannot contain templates.
+The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
+object keys. `command` is required and must be the final top-level key, so all
+setup fields are resolved before the child argv is built.
 
 ## Command Arrays
 

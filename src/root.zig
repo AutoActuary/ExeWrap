@@ -152,6 +152,7 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
         else => return error.ConfigMustBeObject,
     };
     try rejectTemplateObjectKeys(parsed.value, scanned.sentinels);
+    try validateTopLevelShape(root);
 
     const strictness = template_expr.Strictness{
         .error_on_missing_env = getBool(root, "error_on_missing_env") orelse false,
@@ -185,6 +186,28 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
         .command = command,
         .env = env,
     };
+}
+
+fn validateTopLevelShape(root: std.json.ObjectMap) !void {
+    var saw_command = false;
+    var it = root.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!isKnownTopLevelKey(key)) return error.UnknownTopLevelKey;
+        if (saw_command) return error.CommandMustBeLast;
+        if (std.mem.eql(u8, key, "command")) saw_command = true;
+    }
+    if (!saw_command) return error.MissingCommand;
+}
+
+fn isKnownTopLevelKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "command") or
+        std.mem.eql(u8, key, "cwd") or
+        std.mem.eql(u8, key, "env") or
+        std.mem.eql(u8, key, "terminal") or
+        std.mem.eql(u8, key, "kill_children_on_exit") or
+        std.mem.eql(u8, key, "error_on_missing_env") or
+        std.mem.eql(u8, key, "error_on_arg_out_of_bounds");
 }
 
 fn parseEnv(
@@ -703,9 +726,41 @@ test "commandline alias is not accepted" {
     };
 
     try std.testing.expectError(
-        error.MissingCommand,
+        error.UnknownTopLevelKey,
         parseConfig(allocator, "{\"commandline\":[\"cmd.exe\"]}", paths),
     );
+}
+
+test "top-level keys are strict and command must be last" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+
+    try std.testing.expectError(error.UnknownTopLevelKey, parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":true,\"foobar\":false,\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.CommandMustBeLast, parseConfigWithOptions(
+        allocator,
+        "{\"command\":[\"cmd.exe\"],\"terminal\":true}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.MissingCommand, parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":true}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
 }
 
 test "env must be an ordered object" {
