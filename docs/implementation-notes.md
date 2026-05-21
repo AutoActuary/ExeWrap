@@ -53,6 +53,10 @@ The default stamp helper omits the end marker because the config is written at
 EOF. Other stampers can write the end marker when they need to append unrelated
 data after the config.
 
+The stamp helper applies optional Windows resources, such as icons, before it
+appends the overlay. Resource updates can rewrite the PE file, so the overlay is
+always the final write.
+
 ## Why Templated JSON Instead Of A Script
 
 The original spec deliberately keeps the config declarative:

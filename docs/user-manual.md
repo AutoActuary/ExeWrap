@@ -41,26 +41,44 @@ Create a config file, then stamp it onto the base executable:
 
 ```powershell
 zig-out\bin\overlay-launcher-stamp.exe `
-  zig-out\bin\overlay-launcher.exe `
-  my-tool.config.json `
+  --launcher zig-out\bin\overlay-launcher.exe `
+  --config my-tool.config.json `
   bundle\bin\my-tool.exe
 ```
 
 Arguments are:
 
 ```text
-overlay-launcher-stamp <base-exe> <config.json> <output-exe>
+overlay-launcher-stamp.exe --launcher <overlay-launcher.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
 ```
 
 Use the base `overlay-launcher.exe` as input when practical. If you stamp an
 already stamped executable, the launcher uses the last embedded start marker and
 config, but the output keeps the earlier overlay bytes and grows unnecessarily.
 
+`--icon` is optional. When present, the stamp helper writes the icon into the
+output executable before appending the config overlay.
+
 Run the stamped output:
 
 ```powershell
 bundle\bin\my-tool.exe --some-user-arg value
 ```
+
+## Stamp Without The Helper
+
+`overlay-launcher-stamp.exe` is not required by the file format. Other tools can
+produce the same output by doing the same few byte-level steps:
+
+1. Copy `overlay-launcher.exe` to the desired output path.
+2. Optionally update the copied executable's Windows resources, such as its icon.
+3. Append the ASCII start marker
+   `8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a`.
+4. Append the UTF-8 templated JSON config bytes.
+5. If unrelated bytes must be appended after the config, append the ASCII end
+   marker `ce3beca3-7ed2-40a4-9133-f82198be1d7b` after the config first.
+
+When the config is the final thing in the file, the end marker is not needed.
 
 ## Config Format
 
