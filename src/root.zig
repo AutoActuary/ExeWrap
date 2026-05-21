@@ -150,7 +150,7 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
         .strictness = strictness,
     };
 
-    const terminal = getBool(root, "terminal") orelse false;
+    const terminal = getBool(root, "terminal") orelse true;
     const kill_children_on_exit = getBool(root, "kill_children_on_exit") orelse false;
 
     const env = try parseEnv(allocator, root.get("env"), &eval_ctx, scanned.sentinels);
@@ -547,7 +547,7 @@ test "normalizes UTF-8 BOM before parsing config" {
         paths,
     );
 
-    try std.testing.expect(!config.terminal);
+    try std.testing.expect(config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("cmd.exe", config.command[0]);
 }

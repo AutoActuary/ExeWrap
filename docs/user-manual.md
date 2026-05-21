@@ -84,12 +84,12 @@ Minimal config:
 | `command` | Yes | array of strings/splices | Child argv. Each entry is one argument. |
 | `cwd` | No | string | Child working directory. Defaults to `@{exe_dir}`. |
 | `env` | No | ordered object | Environment edits applied before starting the child. Later values can read earlier edits. |
-| `terminal` | No | boolean | Allows a console child to show/use a terminal. When omitted or `false`, starts the child with no window and ignored stdio. |
+| `terminal` | No | boolean | When omitted or `true`, allows a console child to show/use a terminal. When `false`, starts the child with no window and ignored stdio. |
 | `kill_children_on_exit` | No | boolean | Kills the child process tree if the launcher exits or is killed. |
-| `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. |
-| `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args:N}` lookups fail. |
+| `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. Otherwise missing env values resolve to an empty string. |
+| `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args:N}` lookups fail. Otherwise missing args resolve to an empty string. |
 
-If `terminal` is omitted, it defaults to `false`.
+If `terminal` is omitted, it defaults to `true`.
 
 The launcher rejects duplicate JSON keys before parsing the config. Object keys
 are literal names and cannot contain templates.
@@ -415,6 +415,7 @@ Config for `bundle\bin\my-tool.exe`:
 
 ```json
 {
+  "terminal": false,
   "kill_children_on_exit": true,
   "cwd": "@{exe_parent:join("app")}",
   "command": [
