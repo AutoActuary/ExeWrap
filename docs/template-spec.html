@@ -168,7 +168,7 @@
       Draft specification for a launcher config format that is JSON-shaped, template-aware,
       friendly to Windows command lines, and expressive enough for portable app launchers.
     </p>
-    <p class="small">Status: implemented config language for the launcher.</p>
+    <p class="small">Status: implemented config language for the launcher. For code-level rationale, see <a href="implementation-notes.md">implementation notes</a>.</p>
   </header>
 
   <section>
@@ -293,7 +293,7 @@
         <tr><td><code>program_files_dir</code></td><td>Program Files directory.</td></tr>
         <tr><td><code>program_files_x86_dir</code></td><td>Program Files (x86) directory on 64-bit Windows.</td></tr>
         <tr><td><code>documents_dir</code></td><td>User Documents directory, if discoverable.</td></tr>
-        <tr><td><code>downloads_dir</code></td><td>User Downloads directory, resolved from the platform known-folder API rather than an environment variable.</td></tr>
+        <tr><td><code>downloads_dir</code></td><td>User Downloads directory derived from the user profile directory when available.</td></tr>
         <tr><td><code>desktop_dir</code></td><td>User Desktop directory, if discoverable.</td></tr>
       </tbody>
     </table>
@@ -750,9 +750,9 @@ argument        = expression
 
     <h3>Source Locations</h3>
     <p>
-      Each sentinel table entry should store the original byte range. JSON parser errors
-      after pass 1 should be mapped back as well as practical. Template parse errors can
-      point directly to the original <code>@{...}</code>.
+      Each sentinel table entry stores the original byte range. Template parse errors can
+      point directly to the original <code>@{...}</code>. JSON parser errors after pass 1
+      are not yet remapped back to original template-source offsets.
     </p>
 
     <h3>Duplicate JSON Keys</h3>
@@ -764,9 +764,9 @@ argument        = expression
     <h3>Object Order</h3>
     <p>
       The current Zig dynamic JSON path preserves insertion order through its object map
-      implementation. If source-order semantics are important to this format, the project
-      should document that the launcher preserves source order and should keep using a
-      representation that does so.
+      implementation, and env arrays are available when order is part of the config
+      contract. If source-order semantics remain important to this format, the project
+      should keep using a representation that preserves iteration order.
     </p>
 
     <h3>Cross-Platform Path Policy</h3>

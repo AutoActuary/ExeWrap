@@ -2,13 +2,13 @@
   "terminal": true,
   "cwd": "@{exe_dir}",
   "env": {
-    "OVERLAY_LAUNCHER_EXAMPLE": "launched from @{exe_filename}",
+    "OVERLAY_LAUNCHER_EXAMPLE": "launched from @{exe_filename_noext:upper}",
     "SCRIPT_HOME": "@{exe_dir}"
   },
   "command": [
     "cmd.exe",
     "/C",
-    "echo exe=@{exe_path} && echo dir=%SCRIPT_HOME% && pause"
+    "echo exe=@{exe_path} && echo dir=%SCRIPT_HOME% && echo example=%OVERLAY_LAUNCHER_EXAMPLE% && pause"
   ]
 }
 
