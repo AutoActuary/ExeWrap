@@ -1,9 +1,10 @@
 # ExeWrap Implementation Notes
 
-This document records the design rationale behind the templated JSON launcher
-implemented from [template-spec.html](template-spec.html). It is for maintainers
-who need to change the format or explain why the implementation is shaped the
-way it is.
+This document records the design rationale behind the templated JSON launcher.
+It is for maintainers who need to change the format or explain why the
+implementation is shaped the way it is. The user-facing config guide lives in
+the README; this file focuses on parser, evaluator, overlay, and process
+behavior.
 
 ## Code Map
 
@@ -217,9 +218,23 @@ an unavoidable console flash from the launcher itself.
 
 Child visibility is controlled at child-process creation time:
 
-- `terminal: true` or an omitted `terminal` lets the child inherit stdio and use
-  a visible console when the child program creates or attaches to one.
+- `terminal: true` lets the child inherit stdio and use a visible console when
+  the child program creates or attaches to one.
 - `terminal: false` sets `CREATE_NO_WINDOW` and ignores stdin/stdout/stderr.
+- `terminal: "auto"` is the default. The launcher inspects the resolved
+  executable at `command[0]` and reads its Windows PE subsystem. Console
+  subsystem maps to `terminal: true`; GUI subsystem maps to `terminal: false`;
+  unknown, unsupported, or unreadable executables fall back to `terminal: true`.
+  Bare command names are resolved against the final child `cwd`, `PATH`, and
+  `PATHEXT` before inspection. The same resolved path replaces `command[0]`
+  before spawning, so auto inspection and process creation use one executable
+  decision instead of two separate lookups.
+
+The auto mode is intentionally best-effort. The PE subsystem describes how the
+inspected executable is linked, not what the launched program will decide at
+runtime. Script hosts, forwarding launchers, and apps that choose console/GUI
+behavior during execution should use explicit `terminal: true` or
+`terminal: false` when the default guess is wrong.
 
 `kill_children_on_exit` uses a Windows Job Object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The child is spawned suspended, assigned to
@@ -241,17 +256,17 @@ parsing so malformed text cannot be interpreted differently by later layers.
 The implementation intentionally keeps several items small or explicit:
 
 - Common user directories are currently derived from `USERPROFILE` plus the
-  conventional child name (`Documents`, `Downloads`, `Desktop`). The HTML spec
-  originally described `downloads_dir` as coming from a platform known-folder
-  API, but the current implementation does not call that API.
+  conventional child name (`Documents`, `Downloads`, `Desktop`). The current
+  implementation does not call a platform known-folder API.
 - The scanner records source byte ranges for templates, but JSON parse errors
   are not yet remapped back to original template-source offsets.
 - Object-order environment evaluation depends on the current Zig JSON object
-  representation preserving iteration order. Prefer `env` array syntax when
-  writing docs or examples where order matters.
-- Boolean options are read only when the JSON value is a boolean. Non-boolean
-  values are treated as absent by the current helper rather than producing a
-  dedicated type error.
+  representation preserving iteration order. If the parser representation
+  changes, ordered `env` object evaluation must remain deliberate and tested.
+- Boolean options other than `terminal` are read only when the JSON value is a
+  boolean. Non-boolean values are treated as absent by the current helper rather
+  than producing a dedicated type error. `terminal` is stricter because it
+  accepts a typed union: `true`, `false`, or `"auto"` only.
 - The launcher is Windows-focused. Some path transforms handle drive and UNC
   roots, while cross-platform semantics should be reviewed before promising
   Linux or macOS behavior.

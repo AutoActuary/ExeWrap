@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const template_scan = @import("template_scan.zig");
 pub const template_expr = @import("template_expr.zig");
+pub const command_resolve = @import("command_resolve.zig");
 
 pub const marker_uuid = "8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a";
 pub const end_marker_uuid = "ce3beca3-7ed2-40a4-9133-f82198be1d7b";
@@ -71,8 +72,14 @@ pub const EnvVar = struct {
     value: []const u8,
 };
 
+pub const TerminalMode = enum {
+    visible,
+    hidden,
+    auto,
+};
+
 pub const Config = struct {
-    terminal: bool,
+    terminal: TerminalMode,
     kill_children_on_exit: bool,
     cwd: []const u8,
     command: []const []const u8,
@@ -166,7 +173,7 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
         .strictness = strictness,
     };
 
-    const terminal = getBool(root, "terminal") orelse true;
+    const terminal = try parseTerminalMode(allocator, root, &eval_ctx, scanned.sentinels);
     const kill_children_on_exit = getBool(root, "kill_children_on_exit") orelse false;
 
     const env = try parseEnv(allocator, root.get("env"), &eval_ctx, scanned.sentinels);
@@ -233,6 +240,24 @@ fn parseEnv(
     }
 
     return try vars.toOwnedSlice(allocator);
+}
+
+fn parseTerminalMode(
+    allocator: std.mem.Allocator,
+    root: std.json.ObjectMap,
+    ctx: *template_expr.EvalContext,
+    sentinels: []const template_scan.Sentinel,
+) !TerminalMode {
+    const value = root.get("terminal") orelse return .auto;
+    return switch (value) {
+        .bool => |b| if (b) .visible else .hidden,
+        .string => |s| {
+            const resolved = try evalTemplateString(allocator, s, ctx, sentinels);
+            if (std.mem.eql(u8, resolved, "auto")) return .auto;
+            return error.InvalidTerminalMode;
+        },
+        else => error.InvalidTerminalMode,
+    };
 }
 
 fn evalStringField(
@@ -339,6 +364,51 @@ fn stringContainsSentinel(value: []const u8, sentinels: []const template_scan.Se
         if (std.mem.indexOf(u8, value, sentinel.uuid) != null) return true;
     }
     return false;
+}
+
+pub const WindowsSubsystem = enum {
+    native,
+    windows_gui,
+    windows_console,
+    other,
+};
+
+pub fn windowsSubsystemFromPeBytes(bytes: []const u8) !WindowsSubsystem {
+    const dos_lfanew_offset = 0x3c;
+    if (bytes.len < dos_lfanew_offset + @sizeOf(u32)) return error.InvalidPeFile;
+    if (!std.mem.eql(u8, bytes[0..2], "MZ")) return error.InvalidPeFile;
+
+    const pe_offset = readLittleInt(u32, bytes, dos_lfanew_offset);
+    const pe_offset_usize: usize = @intCast(pe_offset);
+    if (pe_offset_usize > bytes.len or bytes.len - pe_offset_usize < 24) return error.InvalidPeFile;
+    if (!std.mem.eql(u8, bytes[pe_offset_usize..][0..4], "PE\x00\x00")) return error.InvalidPeFile;
+
+    const optional_header_size = readLittleInt(u16, bytes, pe_offset_usize + 20);
+    const optional_header_offset = pe_offset_usize + 24;
+    const subsystem_offset = optional_header_offset + 68;
+    if (optional_header_size < 70 or subsystem_offset + @sizeOf(u16) > bytes.len) return error.InvalidPeFile;
+
+    const magic = readLittleInt(u16, bytes, optional_header_offset);
+    if (magic != 0x10b and magic != 0x20b) return error.InvalidPeFile;
+
+    return switch (readLittleInt(u16, bytes, subsystem_offset)) {
+        1 => .native,
+        2 => .windows_gui,
+        3 => .windows_console,
+        else => .other,
+    };
+}
+
+pub fn terminalVisibleFromWindowsSubsystem(subsystem: WindowsSubsystem) ?bool {
+    return switch (subsystem) {
+        .windows_console => true,
+        .windows_gui => false,
+        else => null,
+    };
+}
+
+fn readLittleInt(comptime T: type, bytes: []const u8, offset: usize) T {
+    return std.mem.readInt(T, bytes[offset..][0..@sizeOf(T)], .little);
 }
 
 fn rejectTemplateObjectKeys(value: std.json.Value, sentinels: []const template_scan.Sentinel) !void {
@@ -573,7 +643,7 @@ test "normalizes UTF-8 BOM before parsing config" {
         paths,
     );
 
-    try std.testing.expect(config.terminal);
+    try std.testing.expectEqual(TerminalMode.auto, config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("cmd.exe", config.command[0]);
 }
@@ -619,6 +689,28 @@ test "accepts UTF-8 config strings" {
 test "overlay markers are documented ASCII UUID strings" {
     try std.testing.expectEqualStrings("8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a", config_start_marker);
     try std.testing.expectEqualStrings("ce3beca3-7ed2-40a4-9133-f82198be1d7b", config_end_marker);
+}
+
+test "windows PE subsystem inspection identifies console and GUI executables" {
+    var bytes = [_]u8{0} ** 256;
+    bytes[0] = 'M';
+    bytes[1] = 'Z';
+    std.mem.writeInt(u32, bytes[0x3c..][0..4], 0x80, .little);
+    @memcpy(bytes[0x80..][0..4], "PE\x00\x00");
+    std.mem.writeInt(u16, bytes[0x80 + 20 ..][0..2], 0xf0, .little);
+    std.mem.writeInt(u16, bytes[0x80 + 24 ..][0..2], 0x20b, .little);
+
+    std.mem.writeInt(u16, bytes[0x80 + 24 + 68 ..][0..2], 3, .little);
+    const console = try windowsSubsystemFromPeBytes(&bytes);
+    try std.testing.expectEqual(WindowsSubsystem.windows_console, console);
+    try std.testing.expectEqual(true, terminalVisibleFromWindowsSubsystem(console).?);
+
+    std.mem.writeInt(u16, bytes[0x80 + 24 + 68 ..][0..2], 2, .little);
+    const gui = try windowsSubsystemFromPeBytes(&bytes);
+    try std.testing.expectEqual(WindowsSubsystem.windows_gui, gui);
+    try std.testing.expectEqual(false, terminalVisibleFromWindowsSubsystem(gui).?);
+
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes("not pe"));
 }
 
 test "embedded config reads to EOF when end marker is absent" {
@@ -683,7 +775,7 @@ test "parse config expands paths" {
     defer arena.deinit();
     const config = try parseConfig(arena.allocator(), json, paths);
 
-    try std.testing.expect(config.terminal);
+    try std.testing.expectEqual(TerminalMode.visible, config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("C:\\apps\\demo", config.cwd);
     try std.testing.expectEqual(@as(usize, 3), config.command.len);
@@ -714,6 +806,145 @@ test "parse config accepts kill children on exit option" {
 
     try std.testing.expect(config.kill_children_on_exit);
 }
+
+test "terminal mode defaults to auto and accepts strict values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+    try env_map.put("TERMINAL_MODE", "auto");
+
+    const default_config = try parseConfigWithOptions(
+        allocator,
+        "{\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    );
+    try std.testing.expectEqual(TerminalMode.auto, default_config.terminal);
+
+    const true_config = try parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":true,\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    );
+    try std.testing.expectEqual(TerminalMode.visible, true_config.terminal);
+
+    const false_config = try parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":false,\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    );
+    try std.testing.expectEqual(TerminalMode.hidden, false_config.terminal);
+
+    const auto_config = try parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":\"@{env:\"TERMINAL_MODE\"}\",\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    );
+    try std.testing.expectEqual(TerminalMode.auto, auto_config.terminal);
+
+    try std.testing.expectError(error.InvalidTerminalMode, parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":\"true\",\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.InvalidTerminalMode, parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":1,\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+}
+
+test "command resolver uses final cwd PATH and PATHEXT" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var env_map = std.process.EnvMap.init(allocator);
+    try env_map.put("PATH", "C:\\Ignored;C:\\Tools");
+    try env_map.put("PATHEXT", ".PY;.EXE;.CMD");
+
+    const mock = MockFiles{ .paths = &.{
+        "C:\\App\\python.EXE",
+        "C:\\Tools\\tool.CMD",
+        "C:\\Tools\\script.PY",
+        "C:\\Tools\\script.EXE",
+    } };
+
+    const command = [_][]const u8{ "python", "-V" };
+    const resolved = try command_resolve.resolveCommandForSpawn(allocator, &command, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+    try std.testing.expect(resolved.found);
+    try std.testing.expectEqualStrings("C:\\App\\python.EXE", resolved.executable_path);
+    try std.testing.expectEqualStrings("C:\\App\\python.EXE", resolved.argv[0]);
+    try std.testing.expectEqualStrings("-V", resolved.argv[1]);
+
+    const path_command = [_][]const u8{ "tool", "arg" };
+    const path_resolved = try command_resolve.resolveCommandForSpawn(allocator, &path_command, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+    try std.testing.expect(path_resolved.found);
+    try std.testing.expectEqualStrings("C:\\Tools\\tool.CMD", path_resolved.executable_path);
+    try std.testing.expectEqualStrings("C:\\Tools\\tool.CMD", path_resolved.argv[0]);
+
+    const unsupported_first = [_][]const u8{"script"};
+    const unsupported_resolved = try command_resolve.resolveCommandForSpawn(allocator, &unsupported_first, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+    try std.testing.expect(unsupported_resolved.found);
+    try std.testing.expectEqualStrings("C:\\Tools\\script.EXE", unsupported_resolved.executable_path);
+}
+
+test "command resolver leaves unresolved commands untouched" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var env_map = std.process.EnvMap.init(allocator);
+    try env_map.put("PATH", "C:\\Tools");
+
+    const mock = MockFiles{ .paths = &.{} };
+    const command = [_][]const u8{ "missing.exe", "arg" };
+    const resolved = try command_resolve.resolveCommandForSpawn(allocator, &command, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+
+    try std.testing.expect(!resolved.found);
+    try std.testing.expectEqualStrings("missing.exe", resolved.executable_path);
+    try std.testing.expectEqualStrings("missing.exe", resolved.argv[0]);
+}
+
+const MockFiles = struct {
+    paths: []const []const u8,
+
+    fn exists(context: ?*const anyopaque, path: []const u8) bool {
+        const self: *const MockFiles = @ptrCast(@alignCast(context.?));
+        for (self.paths) |candidate| {
+            if (std.ascii.eqlIgnoreCase(candidate, path)) return true;
+        }
+        return false;
+    }
+};
 
 test "commandline alias is not accepted" {
     const allocator = std.testing.allocator;
@@ -868,7 +1099,7 @@ test "templated JSON command supports raw quotes and args splicing" {
         .env_map = &env_map,
     });
 
-    try std.testing.expect(config.terminal);
+    try std.testing.expectEqual(TerminalMode.visible, config.terminal);
     try std.testing.expectEqualStrings("C:\\Bundle\\app", config.cwd);
     try std.testing.expectEqual(@as(usize, 6), config.command.len);
     try std.testing.expectEqualStrings("C:\\Bundle\\python\\python.exe", config.command[0]);
