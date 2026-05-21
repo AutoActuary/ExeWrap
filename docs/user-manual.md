@@ -43,6 +43,7 @@ Create a config file, then stamp it onto the base executable:
 zig-out\bin\overlay-launcher-stamp.exe `
   --launcher zig-out\bin\overlay-launcher.exe `
   --config my-tool.config.json `
+  --icon logo.ico `
   bundle\bin\my-tool.exe
 ```
 

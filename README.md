@@ -29,6 +29,7 @@ Create a launcher from the included example config:
 zig-out\bin\overlay-launcher-stamp.exe `
   --launcher zig-out\bin\overlay-launcher.exe `
   --config examples\config.json `
+  --icon path\to\logo.ico `
   examples\demo-launcher.exe
 ```
 
