@@ -42,11 +42,12 @@ pub fn main() !void {
     const base = try std.fs.cwd().readFileAlloc(allocator, options.launcher_path, launcher.max_exe_bytes);
     const config = try std.fs.cwd().readFileAlloc(allocator, options.config_path, max_config_bytes);
     try launcher.validateConfigBytes(config);
+    const existing_range = launcher.embeddedConfigRangeFromBytes(base);
 
     {
         const output = try std.fs.cwd().createFile(options.output_path, .{ .truncate = true });
         defer output.close();
-        try output.writeAll(base);
+        try writeBaseBeforeConfig(output, base, existing_range);
     }
 
     if (options.icon_path) |icon_path| {
@@ -57,6 +58,24 @@ pub fn main() !void {
         const output = try std.fs.cwd().openFile(options.output_path, .{ .mode = .write_only });
         defer output.close();
         try output.seekFromEnd(0);
+        try writeConfigOverlay(output, base, config, existing_range);
+    }
+}
+
+fn writeBaseBeforeConfig(output: std.fs.File, base: []const u8, existing_range: ?launcher.EmbeddedConfigRange) !void {
+    if (existing_range) |range| {
+        try output.writeAll(base[0..range.marker_start]);
+    } else {
+        try output.writeAll(base);
+    }
+}
+
+fn writeConfigOverlay(output: std.fs.File, base: []const u8, config: []const u8, existing_range: ?launcher.EmbeddedConfigRange) !void {
+    if (existing_range) |range| {
+        try output.writeAll(launcher.config_start_marker);
+        try output.writeAll(config);
+        try output.writeAll(base[range.config_end..]);
+    } else {
         try output.writeAll(launcher.config_start_marker);
         try output.writeAll(config);
     }
