@@ -3,8 +3,8 @@
 `overlay-launcher` turns one generic launcher executable into a renamed, configured
 launcher by appending JSON to the end of the `.exe`.
 
-The stamped launcher reads its own config, expands placeholders such as
-`{exe_dir}`, applies environment variables, sets the child working directory,
+The stamped launcher reads its own config, evaluates template expressions such as
+`@{exe_dir}`, applies environment variables, sets the child working directory,
 and runs the configured argv list.
 
 ## Mental Model
@@ -45,11 +45,11 @@ bundle/
       __main__.py
 ```
 
-For `bundle/bin/my-tool.exe`, the placeholder `{exe_dir}` is `bundle/bin`.
+For `bundle/bin/my-tool.exe`, the template expression `@{exe_dir}` is `bundle/bin`.
 That means the sibling Python runtime is:
 
 ```text
-{exe_dir}\..\python\python.exe
+@{exe_dir}\..\python\python.exe
 ```
 
 ## Run A Python Module
@@ -65,26 +65,28 @@ Use this config:
 ```json
 {
   "terminal": true,
-  "cwd": "{exe_dir}\\..\\app",
+  "cwd": "@{exe_dir}\\..\\app",
   "env": {
-    "PYTHONHOME": "{exe_dir}\\..\\python",
-    "PYTHONPATH": "{exe_dir}\\..\\app"
+    "PYTHONHOME": "@{exe_dir}\\..\\python",
+    "PYTHONPATH": "@{exe_dir}\\..\\app"
   },
   "command": [
-    "{exe_dir}\\..\\python\\python.exe",
+    "@{exe_dir}\\..\\python\\python.exe",
     "-m",
     "my_module",
     "--input",
-    "{exe_dir}\\..\\data\\input.json"
+    "@{exe_dir}\\..\\data\\input.json",
+    @{args}
   ]
 }
 ```
 
 Important details:
 
-- `"{exe_dir}\\..\\python\\python.exe"` is the executable path.
+- `"@{exe_dir}\\..\\python\\python.exe"` is the executable path.
 - `"-m"` and `"my_module"` are separate arguments.
 - Any later values are normal module arguments.
+- `@{args}` splices all arguments passed to the launcher into the child argv list.
 - `cwd` controls where relative paths inside the Python process resolve.
 - Backslashes in JSON strings must be doubled as `\\`.
 
@@ -93,9 +95,9 @@ For a silent background run, switch to:
 ```json
 {
   "silent": true,
-  "cwd": "{exe_dir}\\..\\app",
+  "cwd": "@{exe_dir}\\..\\app",
   "command": [
-    "{exe_dir}\\..\\python\\python.exe",
+    "@{exe_dir}\\..\\python\\python.exe",
     "-m",
     "my_module"
   ]
@@ -127,17 +129,21 @@ Now `bundle\bin\my-tool.exe` contains both the launcher and the config.
 Config files are UTF-8 JSON. A UTF-8 BOM is accepted, but non-UTF-8 config
 bytes are rejected before JSON parsing.
 
-## Placeholders
+## Template Expressions
 
-Use placeholders anywhere inside `cwd`, `env` values, and `command` entries.
+Use `@{...}` template expressions anywhere inside `cwd`, `env` values, and
+`command` entries. Bare braces are ordinary text, so PowerShell script blocks
+such as `Where-Object { $_.Name -eq "python" }` do not need escaping.
 
-| Placeholder | Meaning |
+| Expression | Meaning |
 | --- | --- |
-| `{exe_path}` | Full path to the stamped executable |
-| `{exe_dir}` | Directory containing the stamped executable |
-| `{exe_name}` | File name of the stamped executable |
-| `{exe_stem}` | File name without extension |
-| `{cwd}` | Directory the launcher was started from |
+| `@{exe_path}` | Full path to the stamped executable |
+| `@{exe_dir}` | Directory containing the stamped executable |
+| `@{exe_filename}` | File name of the stamped executable |
+| `@{exe_filename_noext}` | File name without extension |
+| `@{cwd}` | Directory the launcher was started from |
+| `@{args}` | All user arguments, spliced into a command array |
+| `@{env:"PATH"}` | Current environment value, including earlier config edits |
 
 The launcher also sets these environment variables for the child process:
 
@@ -199,7 +205,7 @@ built-in commands.
 ```json
 {
   "terminal": true,
-  "cwd": "{exe_dir}",
+  "cwd": "@{exe_dir}",
   "command": [
     "cmd.exe",
     "/C",
@@ -215,8 +221,8 @@ built-in commands.
 ```json
 {
   "env": {
-    "APP_HOME": "{exe_dir}\\..\\app",
-    "PYTHONPATH": "{exe_dir}\\..\\app"
+    "APP_HOME": "@{exe_dir}\\..\\app",
+    "PYTHONPATH": "@{exe_dir}\\..\\app"
   },
   "command": ["cmd.exe", "/C", "echo %APP_HOME%"]
 }
@@ -227,8 +233,8 @@ Or an array:
 ```json
 {
   "env": [
-    { "name": "APP_HOME", "value": "{exe_dir}\\..\\app" },
-    { "name": "PYTHONPATH", "value": "{exe_dir}\\..\\app" }
+    { "name": "APP_HOME", "value": "@{exe_dir}\\..\\app" },
+    { "name": "PYTHONPATH", "value": "@{exe_dir}\\..\\app" }
   ],
   "command": ["cmd.exe", "/C", "echo %APP_HOME%"]
 }
@@ -242,9 +248,9 @@ If a Python module cannot be found, check `cwd` and `PYTHONPATH`. A good default
 for a bundled app is usually:
 
 ```json
-"cwd": "{exe_dir}\\..\\app",
+"cwd": "@{exe_dir}\\..\\app",
 "env": {
-  "PYTHONPATH": "{exe_dir}\\..\\app"
+  "PYTHONPATH": "@{exe_dir}\\..\\app"
 }
 ```
 

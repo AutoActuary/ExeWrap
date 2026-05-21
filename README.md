@@ -44,22 +44,22 @@ Run `examples\demo-launcher.exe` to execute the stamped command.
 For packaging recipes and copy/paste examples, see the
 [user manual](docs/user-manual.md).
 
-For the planned templated-JSON expression language, see the
+For the full templated-JSON expression language, see the
 [template spec](docs/template-spec.html).
 
 ## Config
 
-Config files are UTF-8 JSON. A UTF-8 BOM is tolerated when reading stamped
-configs, but the embedded config bytes must still be valid UTF-8.
+Config files are UTF-8 templated JSON. A UTF-8 BOM is tolerated when reading
+stamped configs, but the embedded config bytes must still be valid UTF-8.
 
 ```json
 {
   "terminal": true,
-  "cwd": "{exe_dir}",
+  "cwd": "@{exe_dir}",
   "env": {
-    "SCRIPT_HOME": "{exe_dir}"
+    "SCRIPT_HOME": "@{exe_dir}"
   },
-  "command": ["cmd.exe", "/C", "{exe_dir}\\run.cmd"]
+  "command": ["cmd.exe", "/C", "@{exe_dir}\\run.cmd"]
 }
 ```
 
@@ -70,20 +70,24 @@ Fields:
 - `kill_children_on_exit`: when `true` on Windows, runs the child in a Job Object
   with kill-on-close enabled, so killing the launcher also kills the child
   process tree.
-- `cwd`: child working directory. Defaults to `{exe_dir}`.
+- `cwd`: child working directory. Defaults to the launcher executable directory.
 - `env`: environment variables as either an object or an array of `{ "name", "value" }` entries.
 - `command` or `commandline`: argv list to run.
 
 If both `terminal` and `silent` are omitted, the launcher defaults to silent.
 If both are present, `silent` wins.
 
-Placeholders:
+Template expressions use `@{...}`. Bare braces are ordinary text, so shell
+script blocks such as `Where-Object { $_.Name -eq "demo" }` are left alone.
+Common base values:
 
-- `{exe_path}`: full path to the stamped executable
-- `{exe_dir}`: directory containing the stamped executable
-- `{exe_name}`: file name of the stamped executable
-- `{exe_stem}`: file name without extension
-- `{cwd}`: directory the launcher was started from
+- `@{exe_path}`: full path to the stamped executable
+- `@{exe_dir}`: directory containing the stamped executable
+- `@{exe_filename}`: file name of the stamped executable
+- `@{exe_filename_noext}`: file name without extension
+- `@{cwd}`: directory the launcher was started from
+- `@{args}`: all user arguments as a command-array splice
+- `@{env:"PATH"}`: current environment value, including earlier config edits
 
 The launcher also injects these environment variables for the child:
 
@@ -102,7 +106,7 @@ the payload at runtime by marker or trailer.
 
 For path behavior, this follows AppImage/AppDir-style launchers and installer
 systems that expose the executable directory as the stable base for bundled
-files. The default `cwd` is therefore `{exe_dir}`, which makes scripts next to
+files. The default `cwd` is therefore the executable directory, which makes scripts next to
 the launcher work even when the launcher is started from Explorer, another
 process, or a different shell directory.
 
@@ -115,7 +119,7 @@ References:
 
 - Zig 0.15.2 was selected from the official Windows x86_64 release:
   https://ziglang.org/download/
-- AppImage/AppDir influenced the `{exe_dir}`-as-app-root model:
+- AppImage/AppDir influenced the executable-directory-as-app-root model:
   https://docs.appimage.org/reference/appdir.html
 - PE overlay behavior is the same family of approach used by self-extracting
   archives and packagers:
