@@ -70,8 +70,14 @@ final exe location, so `@{exe_dir}` follows the stamped file.
 
 ## Minimal Config
 
-Config files are UTF-8 templated JSON. A leading UTF-8 BOM is accepted. UTF-16,
-Windows code pages, and other non-UTF-8 byte sequences are rejected.
+Config files are JSON with a small overlay template syntax. Use `@{name}` to
+insert launcher values, and chain transforms such as
+`@{exe_parent:join("python"):join("python.exe")}` for paths, strings,
+environment values, and arguments. See "Template Expressions" for base values,
+lookups, and transforms.
+
+Config files must be utf-8. A leading utf-8 BOM is accepted. UTF-16, Windows
+code pages, and other non-utf-8 byte sequences are rejected.
 
 ```json
 {
@@ -454,7 +460,7 @@ produce the same output by doing the same byte-level steps:
 2. Optionally update the copied executable's Windows resources, such as its icon.
 3. Append the ASCII start marker
    `8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a`.
-4. Append the UTF-8 templated JSON config bytes.
+4. Append the utf-8 templated JSON config bytes.
 5. If unrelated bytes must be appended after the config, append the ASCII end
    marker `ce3beca3-7ed2-40a4-9133-f82198be1d7b` after the config first.
 
@@ -502,7 +508,7 @@ output file. Re-run `ExeWrap-stamper.exe` and launch the output path.
 
 ### Stamping fails with `ConfigMustBeUtf8`
 
-Save the config as UTF-8. A UTF-8 BOM is fine, but UTF-16 and legacy ANSI code
+Save the config as utf-8. A utf-8 BOM is fine, but UTF-16 and legacy ANSI code
 pages are not.
 
 ### JSON parsing fails near a template
