@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  test:
+    name: Test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: pwsh
+        run: |
+          $name = "zig-x86_64-windows-$env:ZIG_VERSION"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          $dest = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$name.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Check Zig version
+        run: zig version
+
+      - name: Run tests
+        run: zig build test
+
+  build-windows:
+    name: Build ${{ matrix.label }}
+    runs-on: windows-latest
+    needs: test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            target: x86_64-windows
+          - label: windows-x86
+            target: x86-windows
+          - label: windows-arm64
+            target: aarch64-windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: pwsh
+        run: |
+          $name = "zig-x86_64-windows-$env:ZIG_VERSION"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          $dest = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$name.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build Windows executables
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+
+      - name: Upload CI binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlay-launcher-${{ matrix.label }}
+          path: |
+            zig-out/bin/overlay-launcher.exe
+            zig-out/bin/overlay-launcher-stamp.exe
+          if-no-files-found: error

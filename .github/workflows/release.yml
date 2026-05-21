@@ -1,0 +1,68 @@
+name: Release Windows Binaries
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  build-release:
+    name: Release ${{ matrix.label }}
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: windows-x64
+            target: x86_64-windows
+          - label: windows-x86
+            target: x86-windows
+          - label: windows-arm64
+            target: aarch64-windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        shell: pwsh
+        run: |
+          $name = "zig-x86_64-windows-$env:ZIG_VERSION"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          $dest = Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$name.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
+          $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build release executables
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+
+      - name: Package executables
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.release.tag_name }}"
+          $assetBase = "overlay-launcher-$tag-${{ matrix.label }}"
+          $packageDir = Join-Path "dist" $assetBase
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+          Copy-Item zig-out/bin/overlay-launcher.exe $packageDir
+          Copy-Item zig-out/bin/overlay-launcher-stamp.exe $packageDir
+          Copy-Item README.md $packageDir
+          Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath "dist/$assetBase.zip" -Force
+          $hash = Get-FileHash "dist/$assetBase.zip" -Algorithm SHA256
+          "$($hash.Hash.ToLowerInvariant())  $assetBase.zip" | Set-Content "dist/$assetBase.zip.sha256" -Encoding ascii
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.event.release.tag_name }}"
+          $assetBase = "overlay-launcher-$tag-${{ matrix.label }}"
+          gh release upload $tag "dist/$assetBase.zip" "dist/$assetBase.zip.sha256" --clobber

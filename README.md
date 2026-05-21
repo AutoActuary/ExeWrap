@@ -86,6 +86,12 @@ Use a debug build when diagnosing launcher behavior:
 zig build -Doptimize=Debug
 ```
 
+Published GitHub releases build and attach Windows zip files for:
+
+- `windows-x64`
+- `windows-x86`
+- `windows-arm64`
+
 ## Config File
 
 Config files are UTF-8 templated JSON. A leading UTF-8 BOM is accepted, but
