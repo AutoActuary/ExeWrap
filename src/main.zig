@@ -63,10 +63,23 @@ pub fn main() !void {
     const exe_path = try std.fs.selfExePathAlloc(scratch);
     const paths = try launcher.RuntimePaths.init(scratch, exe_path);
     const config_bytes = try launcher.readEmbeddedConfig(scratch, exe_path);
-    const config = try launcher.parseConfig(scratch, config_bytes, paths);
 
     var env_map = try std.process.getEnvMap(scratch);
-    try launcher.applyEnvironment(&env_map, config.env, paths);
+    try launcher.applyEnvironment(&env_map, &.{}, paths);
+
+    const process_args = try std.process.argsAlloc(scratch);
+    const args0 = if (process_args.len > 0) process_args[0] else exe_path;
+    var user_args: std.ArrayList([]const u8) = .empty;
+    for (process_args[1..]) |arg| {
+        try user_args.append(scratch, arg);
+    }
+
+    const config = try launcher.parseConfigWithOptions(scratch, config_bytes, .{
+        .paths = paths,
+        .args0 = args0,
+        .args = user_args.items,
+        .env_map = &env_map,
+    });
 
     var child = std.process.Child.init(config.command, scratch);
     child.cwd = config.cwd;
