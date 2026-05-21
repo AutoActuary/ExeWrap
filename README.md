@@ -1,13 +1,18 @@
 # overlay-launcher
 
-`overlay-launcher` is a tiny Windows launcher written in Zig. It turns one
-generic executable into a configured launcher by appending a UTF-8 templated JSON
-config to the end of the `.exe`.
+`overlay-launcher` turns one generic executable into many tiny app launchers by
+stamping a templated JSON config onto the end of the `.exe`.
 
-The stamped executable reads its own overlay, evaluates template expressions such
-as `@{exe_dir}`, and starts the configured child process. This is useful for
-portable app bundles where a launcher in `bin\` needs to run scripts, Python
-modules, or tools stored next to it.
+Think of it as a symlink with arguments, environment setup, portable paths, and
+Windows `.exe` behavior. That matters because `.exe` files are first-class on
+Windows: users can double-click them, pin them, rename them, assign icons, and
+hand them to tools that do not treat `.cmd`, PowerShell scripts, or shortcuts as
+real applications.
+
+The stamped launcher reads its own overlay, evaluates template expressions such
+as `@{exe_dir}`, and starts the configured child process. It is meant for
+portable bundles where a launcher in `bin\` needs to run a Python module, script,
+or tool stored next to it without hard-coded install paths.
 
 ## Quick Start
 
@@ -35,6 +40,9 @@ examples\demo-launcher.exe
 The output executable contains both the normal launcher and the appended config.
 You can copy or rename the stamped `.exe`; templates such as `@{exe_dir}` are
 resolved from the final executable path at launch time.
+
+That means one base launcher can produce `my-tool.exe`, `admin-tool.exe`, or
+`report-viewer.exe` simply by stamping different configs.
 
 ## What Gets Stamped
 
@@ -279,7 +287,6 @@ to `true`. Leave it unset when the child should survive after the launcher exits
 
 ## Prior Art
 
-`overlay-launcher` uses the normal PE overlay pattern: append config bytes after
-the executable image and find them again by marker. Runtime paths are anchored at
-the stamped executable directory, which matches the usual portable-app launcher
-model.
+The core idea is the same broad pattern used by self-extracting archives and
+portable app launchers: keep the executable normal, append data after it, and
+anchor runtime paths at the executable location.
