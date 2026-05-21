@@ -309,6 +309,7 @@ to `true`. Leave it unset when the child should survive after the launcher exits
 
 ## More Documentation
 
+- [HTML guide](docs/guide.html): terse visual guide for first-time users.
 - [User manual](docs/user-manual.md): detailed usage recipes and config reference.
 - [Templated JSON spec](docs/template-spec.html): full expression language and
   scanner/evaluator rules.
