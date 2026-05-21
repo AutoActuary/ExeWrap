@@ -95,17 +95,14 @@ Top-level fields:
 | Field | Meaning |
 | --- | --- |
 | `command` | Required argv array to run. Each array item is one child-process argument. |
-| `commandline` | Alias for `command`; if both exist, `commandline` is used. |
 | `cwd` | Child working directory. Defaults to the stamped executable directory. |
-| `env` | Environment edits as an object or an ordered array of `{ "name", "value" }` entries. |
-| `terminal` | When `true`, the child can inherit/use a visible console. |
-| `silent` | When `true`, the child is started with no window and ignored stdio. |
+| `env` | Ordered object of environment edits. Later values can read earlier edits. |
+| `terminal` | When `true`, the child can inherit/use a visible console. When omitted or `false`, the child is started with no window and ignored stdio. |
 | `kill_children_on_exit` | When `true`, Windows kills the child process tree if the launcher dies. |
 | `error_on_missing_env` | When `true`, `@{env:"NAME"}` fails if `NAME` is not set. |
 | `error_on_arg_out_of_bounds` | When `true`, `@{args:N}` fails if that user argument is missing. |
 
-If neither `terminal` nor `silent` is present, the launcher defaults to silent.
-If both are present, `silent` wins.
+If `terminal` is omitted, it defaults to `false`.
 
 ## Command Arguments
 
@@ -191,38 +188,17 @@ Write `@@{` when you need a literal `@{`. Bare braces are ordinary text, so
 PowerShell script blocks such as `Where-Object { $_.Name -eq "python" }` do not
 need escaping.
 
-## Environment Passed To The Child
+## Environment Edits
 
-The launcher injects these variables before applying config `env` edits:
-
-| Variable | Meaning |
-| --- | --- |
-| `OVERLAY_LAUNCHER_EXE` | Full path to the stamped executable. |
-| `OVERLAY_LAUNCHER_DIR` | Directory containing the stamped executable. |
-| `OVERLAY_LAUNCHER_NAME` | Stamped executable file name. |
-| `OVERLAY_LAUNCHER_STEM` | File name without extension. |
-| `OVERLAY_LAUNCHER_LAUNCH_CWD` | Directory from which the launcher was started. |
-
-`env` can be an object:
+Use template bases such as `@{exe_dir}` and `@{exe_path}` when launcher metadata
+needs to be copied into environment variables.
 
 ```json
 {
   "env": {
-    "APP_HOME": "@{exe_parent:join("app")}",
-    "PYTHONPATH": "@{exe_parent:join("app")}"
+    "PATH": "@{env:"PATH":prepend_env(exe_parent:join("python"))}",
+    "PATH_AFTER": "@{env:"PATH"}"
   },
-  "command": ["cmd.exe", "/C", "echo %APP_HOME%"]
-}
-```
-
-Or an ordered array, which is useful when later values must read earlier edits:
-
-```json
-{
-  "env": [
-    { "name": "PATH", "value": "@{env:"PATH":prepend_env(exe_parent:join("python"))}" },
-    { "name": "PATH_AFTER", "value": "@{env:"PATH"}" }
-  ],
   "command": ["cmd.exe", "/C", "echo %PATH_AFTER%"]
 }
 ```
@@ -286,9 +262,8 @@ If `@{args}` fails inside a string, move it to its own command-array item. List
 expressions can splice multiple array entries only when they are the entire array
 item.
 
-If an environment value appears stale, use the ordered array form of `env`.
-Object values are also processed in parser insertion order today, but arrays make
-the dependency explicit.
+If an environment value appears stale, check the order of keys in `env`. The
+launcher treats object order as significant for environment edits.
 
 If a background tool leaves child processes behind, set `kill_children_on_exit`
 to `true`. Leave it unset when the child should survive after the launcher exits.
@@ -304,12 +279,7 @@ to `true`. Leave it unset when the child should survive after the launcher exits
 
 ## Prior Art
 
-Windows PE files tolerate overlay bytes after the mapped executable image. This
-is the same broad technique used by self-extracting archives and one-file
-packagers: keep the runtime executable normal, append payload data, then locate
-the payload at runtime by marker.
-
-For path behavior, `overlay-launcher` follows the executable-directory-as-app-root
-model used by portable app systems. The default `cwd` is the executable
-directory, so scripts next to the launcher work when the launcher is started from
-Explorer, another process, or a different shell directory.
+`overlay-launcher` uses the normal PE overlay pattern: append config bytes after
+the executable image and find them again by marker. Runtime paths are anchored at
+the stamped executable directory, which matches the usual portable-app launcher
+model.

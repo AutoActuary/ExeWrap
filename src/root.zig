@@ -76,7 +76,7 @@ pub const EnvVar = struct {
 };
 
 pub const Config = struct {
-    silent: bool,
+    terminal: bool,
     kill_children_on_exit: bool,
     cwd: []const u8,
     command: []const []const u8,
@@ -116,7 +116,6 @@ pub fn parseConfig(allocator: std.mem.Allocator, bytes: []const u8, paths: Runti
     try validateConfigBytes(bytes);
     var env_map = std.process.EnvMap.init(allocator);
     errdefer env_map.deinit();
-    try applyEnvironment(&env_map, &.{}, paths);
     return parseConfigWithOptions(allocator, bytes, .{
         .paths = paths,
         .args0 = paths.exe_path,
@@ -152,7 +151,6 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
     };
 
     const terminal = getBool(root, "terminal") orelse false;
-    const silent = getBool(root, "silent") orelse !terminal;
     const kill_children_on_exit = getBool(root, "kill_children_on_exit") orelse false;
 
     const env = try parseEnv(allocator, root.get("env"), &eval_ctx, scanned.sentinels);
@@ -162,28 +160,16 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
     else
         options.paths.exe_dir;
 
-    const command_value = root.get("commandline") orelse root.get("command") orelse return error.MissingCommand;
+    const command_value = root.get("command") orelse return error.MissingCommand;
     const command = try evalCommand(allocator, command_value, &eval_ctx, scanned.sentinels);
 
     return .{
-        .silent = silent,
+        .terminal = terminal,
         .kill_children_on_exit = kill_children_on_exit,
         .cwd = cwd,
         .command = command,
         .env = env,
     };
-}
-
-pub fn applyEnvironment(env_map: *std.process.EnvMap, vars: []const EnvVar, paths: RuntimePaths) !void {
-    try env_map.put("OVERLAY_LAUNCHER_EXE", paths.exe_path);
-    try env_map.put("OVERLAY_LAUNCHER_DIR", paths.exe_dir);
-    try env_map.put("OVERLAY_LAUNCHER_NAME", if (paths.exe_filename.len > 0) paths.exe_filename else paths.exe_name);
-    try env_map.put("OVERLAY_LAUNCHER_STEM", if (paths.exe_filename_noext.len > 0) paths.exe_filename_noext else paths.exe_stem);
-    try env_map.put("OVERLAY_LAUNCHER_LAUNCH_CWD", paths.launch_cwd);
-
-    for (vars) |entry| {
-        try env_map.put(entry.name, entry.value);
-    }
 }
 
 fn parseEnv(
@@ -195,31 +181,17 @@ fn parseEnv(
     const value = maybe_value orelse return &.{};
     var vars: std.ArrayList(EnvVar) = .empty;
 
-    switch (value) {
-        .object => |object| {
-            var it = object.iterator();
-            while (it.next()) |entry| {
-                const value_string = try evalStringField(allocator, entry.value_ptr.*, ctx, sentinels, error.EnvValuesMustBeStrings);
-                const name = try allocator.dupe(u8, entry.key_ptr.*);
-                try vars.append(allocator, .{ .name = name, .value = value_string });
-                try ctx.env.put(name, value_string);
-            }
-        },
-        .array => |array| {
-            for (array.items) |item| {
-                const object = switch (item) {
-                    .object => |object| object,
-                    else => return error.EnvEntriesMustBeObjects,
-                };
-                const name_value = object.get("name") orelse return error.EnvEntryMissingName;
-                const raw_value = object.get("value") orelse return error.EnvEntryMissingValue;
-                const name = try evalStringField(allocator, name_value, ctx, sentinels, error.EnvEntryNameMustBeString);
-                const value_string = try evalStringField(allocator, raw_value, ctx, sentinels, error.EnvEntryValueMustBeString);
-                try vars.append(allocator, .{ .name = name, .value = value_string });
-                try ctx.env.put(name, value_string);
-            }
-        },
-        else => return error.EnvMustBeObjectOrArray,
+    const object = switch (value) {
+        .object => |object| object,
+        else => return error.EnvMustBeObject,
+    };
+
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        const value_string = try evalStringField(allocator, entry.value_ptr.*, ctx, sentinels, error.EnvValuesMustBeStrings);
+        const name = try allocator.dupe(u8, entry.key_ptr.*);
+        try vars.append(allocator, .{ .name = name, .value = value_string });
+        try ctx.env.put(name, value_string);
     }
 
     return try vars.toOwnedSlice(allocator);
@@ -575,7 +547,7 @@ test "normalizes UTF-8 BOM before parsing config" {
         paths,
     );
 
-    try std.testing.expect(config.silent);
+    try std.testing.expect(!config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("cmd.exe", config.command[0]);
 }
@@ -649,7 +621,7 @@ test "parse config expands paths" {
     defer arena.deinit();
     const config = try parseConfig(arena.allocator(), json, paths);
 
-    try std.testing.expect(!config.silent);
+    try std.testing.expect(config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("C:\\apps\\demo", config.cwd);
     try std.testing.expectEqual(@as(usize, 3), config.command.len);
@@ -679,6 +651,42 @@ test "parse config accepts kill children on exit option" {
     const config = try parseConfig(arena.allocator(), json, paths);
 
     try std.testing.expect(config.kill_children_on_exit);
+}
+
+test "commandline alias is not accepted" {
+    const allocator = std.testing.allocator;
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+
+    try std.testing.expectError(
+        error.MissingCommand,
+        parseConfig(allocator, "{\"commandline\":[\"cmd.exe\"]}", paths),
+    );
+}
+
+test "env must be an ordered object" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+
+    try std.testing.expectError(error.EnvMustBeObject, parseConfigWithOptions(
+        allocator,
+        "{\"env\":[{\"name\":\"PATH\",\"value\":\"x\"}],\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
 }
 
 test "unknown brace groups remain literal for shell scriptblocks" {
@@ -766,7 +774,7 @@ test "templated JSON command supports raw quotes and args splicing" {
         .env_map = &env_map,
     });
 
-    try std.testing.expect(!config.silent);
+    try std.testing.expect(config.terminal);
     try std.testing.expectEqualStrings("C:\\Bundle\\app", config.cwd);
     try std.testing.expectEqual(@as(usize, 6), config.command.len);
     try std.testing.expectEqualStrings("C:\\Bundle\\python\\python.exe", config.command[0]);

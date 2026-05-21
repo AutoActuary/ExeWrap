@@ -82,17 +82,14 @@ Minimal config:
 | Field | Required | Type | Behavior |
 | --- | --- | --- | --- |
 | `command` | Yes | array of strings/splices | Child argv. Each entry is one argument. |
-| `commandline` | No | array of strings/splices | Alias for `command`. If both exist, `commandline` wins. |
 | `cwd` | No | string | Child working directory. Defaults to `@{exe_dir}`. |
-| `env` | No | object or array | Environment edits applied before starting the child. |
-| `terminal` | No | boolean | Allows a console child to show/use a terminal. |
-| `silent` | No | boolean | Starts the child with no window and ignored stdio. |
+| `env` | No | ordered object | Environment edits applied before starting the child. Later values can read earlier edits. |
+| `terminal` | No | boolean | Allows a console child to show/use a terminal. When omitted or `false`, starts the child with no window and ignored stdio. |
 | `kill_children_on_exit` | No | boolean | Kills the child process tree if the launcher exits or is killed. |
 | `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. |
 | `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args:N}` lookups fail. |
 
-If neither `terminal` nor `silent` is present, the launcher defaults to silent.
-If both are present, `silent` wins.
+If `terminal` is omitted, it defaults to `false`.
 
 The launcher rejects duplicate JSON keys before parsing the config. Object keys
 are literal names and cannot contain templates.
@@ -125,7 +122,7 @@ Use `cmd.exe /C` only when you need shell features:
   "command": [
     "cmd.exe",
     "/C",
-    "echo Launcher=%OVERLAY_LAUNCHER_NAME% && dir && pause"
+    "echo Launcher=@{exe_filename} && dir && pause"
   ]
 }
 ```
@@ -336,20 +333,10 @@ This is invalid because one string cannot expand into several argv entries:
 
 ## Environment Edits
 
-The launcher starts with the inherited process environment, injects launcher
-metadata variables, then applies config `env` entries.
-
-Injected variables:
-
-| Variable | Meaning |
-| --- | --- |
-| `OVERLAY_LAUNCHER_EXE` | Full path to the stamped executable. |
-| `OVERLAY_LAUNCHER_DIR` | Directory containing the stamped executable. |
-| `OVERLAY_LAUNCHER_NAME` | File name of the stamped executable. |
-| `OVERLAY_LAUNCHER_STEM` | File name without extension. |
-| `OVERLAY_LAUNCHER_LAUNCH_CWD` | Directory from which the launcher was started. |
-
-Object form:
+The launcher starts with the inherited process environment, then applies config
+`env` entries in object source order. Use template bases such as `@{exe_dir}`
+and `@{exe_path}` when launcher metadata needs to be copied into environment
+variables.
 
 ```json
 {
@@ -361,21 +348,18 @@ Object form:
 }
 ```
 
-Array form:
-
 ```json
 {
-  "env": [
-    { "name": "PATH", "value": "@{env:"PATH":prepend_env(exe_parent:join("python"))}" },
-    { "name": "PATH_AFTER", "value": "@{env:"PATH"}" }
-  ],
+  "env": {
+    "PATH": "@{env:"PATH":prepend_env(exe_parent:join("python"))}",
+    "PATH_AFTER": "@{env:"PATH"}"
+  },
   "command": ["cmd.exe", "/C", "echo %PATH_AFTER%"]
 }
 ```
 
-Use array form when order is part of the config's meaning. The implementation
-also evaluates object entries in parser insertion order, but arrays make that
-dependency visible.
+Object order is part of the `env` contract. The implementation preserves parser
+insertion order and rejects duplicate keys.
 
 ## Recipes
 
@@ -427,11 +411,10 @@ Config for `bundle\bin\my-tool.exe`:
 }
 ```
 
-### Run A Silent Background Worker
+### Run A Background Worker
 
 ```json
 {
-  "silent": true,
   "kill_children_on_exit": true,
   "cwd": "@{exe_parent:join("app")}",
   "command": [

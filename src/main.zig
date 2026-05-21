@@ -65,7 +65,6 @@ pub fn main() !void {
     const config_bytes = try launcher.readEmbeddedConfig(scratch, exe_path);
 
     var env_map = try std.process.getEnvMap(scratch);
-    try launcher.applyEnvironment(&env_map, &.{}, paths);
 
     const process_args = try std.process.argsAlloc(scratch);
     const args0 = if (process_args.len > 0) process_args[0] else exe_path;
@@ -84,16 +83,16 @@ pub fn main() !void {
     var child = std.process.Child.init(config.command, scratch);
     child.cwd = config.cwd;
     child.env_map = &env_map;
-    child.create_no_window = config.silent;
+    child.create_no_window = !config.terminal;
 
-    if (config.silent) {
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-    } else {
+    if (config.terminal) {
         child.stdin_behavior = .Inherit;
         child.stdout_behavior = .Inherit;
         child.stderr_behavior = .Inherit;
+    } else {
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
     }
 
     const term = if (config.kill_children_on_exit and builtin.os.tag == .windows)

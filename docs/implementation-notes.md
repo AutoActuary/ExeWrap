@@ -175,11 +175,10 @@ The implementation supports that behavior by updating the environment map as
 each entry is evaluated. The command array is evaluated after `env`, so command
 templates see the final edited environment.
 
-`env` also supports an array of `{ "name", "value" }` objects. The array form is
-the clearest choice when order is part of the config contract. Object source
-order currently follows Zig's parsed object iteration behavior and is tested,
-but maintainers should preserve this deliberately if the parser representation
-changes.
+`env` is an ordered object. Object source order currently follows Zig's parsed
+object iteration behavior and is tested; maintainers should preserve this
+deliberately if the parser representation changes. Duplicate object keys are
+rejected so ordered evaluation cannot become ambiguous.
 
 ## Strictness Defaults
 
@@ -208,9 +207,10 @@ an unavoidable console flash from the launcher itself.
 
 Child visibility is controlled at child-process creation time:
 
-- `silent: true` sets `CREATE_NO_WINDOW` and ignores stdin/stdout/stderr.
-- `terminal: true` with `silent` absent lets the child inherit stdio and use a
-  visible console when the child program creates or attaches to one.
+- `terminal: false` or an omitted `terminal` sets `CREATE_NO_WINDOW` and ignores
+  stdin/stdout/stderr.
+- `terminal: true` lets the child inherit stdio and use a visible console when
+  the child program creates or attaches to one.
 
 `kill_children_on_exit` uses a Windows Job Object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The child is spawned suspended, assigned to
