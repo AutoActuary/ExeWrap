@@ -582,6 +582,20 @@ Leave it unset when the child process is intentionally long-lived.
 
 ## Prior Art
 
-The core idea is the same broad pattern used by self-extracting archives and
-portable app launchers: keep the executable normal, append data after it, and
-anchor runtime paths at the executable location.
+Similar projects and use cases:
+
+- PortableApps.com-style launchers: for example, `FirefoxPortable.exe` sits at
+  the portable app root and starts Firefox from the app's internal `App`
+  directory while keeping profile/data paths portable.
+- Python packaging launchers: `pip`/`distlib` create small native Windows
+  `.exe` wrappers for console and GUI entry points; the wrapper carries launcher
+  data and a small zip payload after the executable stub.
+- Windows App Execution Aliases: Store apps can expose command names such as
+  `python.exe` or Sysinternals tools through one directory that is already on
+  `PATH`, instead of editing `PATH` for every tool.
+- Chocolatey shims: Chocolatey places small `.exe` shims in
+  `C:\ProgramData\chocolatey\bin`, which is on `PATH`, and those shims redirect
+  to the real package executable in its installed location.
+- Self-extracting archives and one-file packagers: a normal executable carries
+  extra bytes after the mapped image, then finds and interprets that overlay at
+  runtime.
