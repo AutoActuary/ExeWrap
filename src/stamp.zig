@@ -144,14 +144,14 @@ fn parseArgs(args: []const [:0]const u8) !StampOptions {
 fn parseSubsystem(value: []const u8) !StampSubsystem {
     if (std.mem.eql(u8, value, "inherit")) return .inherit;
     if (std.mem.eql(u8, value, "console")) return .console;
-    if (std.mem.eql(u8, value, "windowed") or std.mem.eql(u8, value, "gui")) return .windowed;
+    if (std.mem.eql(u8, value, "windowed")) return .windowed;
     return error.InvalidSubsystem;
 }
 
 fn writeUsage() !void {
     const stderr = std.fs.File.stderr();
     try stderr.writeAll(
-        \\usage: ExeWrap-stamper.exe --launcher <base-launcher.exe> --config <config.json> [--icon <logo.ico>] [--subsystem inherit|console|windowed|gui] <output.exe>
+        \\usage: ExeWrap-stamper.exe --launcher <base-launcher.exe> --config <config.json> [--icon <logo.ico>] [--subsystem inherit|console|windowed] <output.exe>
         \\
     );
 }
@@ -313,7 +313,7 @@ test "stamper arg parsing accepts subsystem values" {
         "--config",
         "config.json",
         "--subsystem",
-        "gui",
+        "windowed",
         "out.exe",
     };
     const options = try parseArgs(&args);
@@ -327,7 +327,7 @@ test "stamper arg parsing accepts subsystem values" {
     try std.testing.expectEqual(StampSubsystem.inherit, try parseSubsystem("inherit"));
     try std.testing.expectEqual(StampSubsystem.console, try parseSubsystem("console"));
     try std.testing.expectEqual(StampSubsystem.windowed, try parseSubsystem("windowed"));
-    try std.testing.expectEqual(StampSubsystem.windowed, try parseSubsystem("gui"));
+    try std.testing.expectError(error.InvalidSubsystem, parseSubsystem("gui"));
     try std.testing.expectError(error.InvalidSubsystem, parseSubsystem("hidden"));
 }
 
