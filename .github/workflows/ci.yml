@@ -70,6 +70,11 @@ jobs:
       - name: Build Windows executables
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
 
+      - name: Run Windows x64 smoke tests
+        if: matrix.target == 'x86_64-windows'
+        shell: pwsh
+        run: ./tests/smoke-windows.ps1
+
       - name: Upload CI binaries
         uses: actions/upload-artifact@v6
         with:

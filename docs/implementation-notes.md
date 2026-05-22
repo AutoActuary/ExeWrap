@@ -229,6 +229,10 @@ Child visibility is controlled at child-process creation time:
   `PATHEXT` before inspection. The same resolved path replaces `command[0]`
   before spawning, so auto inspection and process creation use one executable
   decision instead of two separate lookups.
+  `PATHEXT` probing intentionally accepts only `.COM`, `.EXE`, `.BAT`, and
+  `.CMD`. Windows Script Host files such as `.vbs` should be launched through
+  `wscript.exe` or `cscript.exe`, because they are not accepted as direct child
+  process executables by Zig's spawn path.
 
 The auto mode is intentionally best-effort. The PE subsystem describes how the
 inspected executable is linked, not what the launched program will decide at

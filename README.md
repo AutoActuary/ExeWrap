@@ -115,6 +115,9 @@ order for extensionless names. When ExeWrap finds the executable, it replaces
 `command[0]` with that concrete path before spawning, and `"auto"` inspects the
 same file. Launchers, script hosts, and programs that decide at execution time
 whether to act like a console or GUI app may need an explicit `true` or `false`.
+`PATHEXT` lookup is limited to extensions Windows can spawn directly here:
+`.COM`, `.EXE`, `.BAT`, and `.CMD`. Run `.vbs` scripts through `wscript.exe` or
+`cscript.exe` explicitly when you want Windows Script Host behavior.
 
 When present, `terminal` must evaluate to exactly JSON `true`, JSON `false`, or
 the string `"auto"`. Other strings and other JSON types are rejected.

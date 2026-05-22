@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const template_scan = @import("template_scan.zig");
 pub const template_expr = @import("template_expr.zig");
@@ -108,7 +109,9 @@ pub fn embeddedConfigFromBytes(bytes: []const u8) ![]const u8 {
 }
 
 pub fn embeddedConfigRangeFromBytes(bytes: []const u8) ?EmbeddedConfigRange {
-    const marker_start = std.mem.lastIndexOf(u8, bytes, config_start_marker) orelse return null;
+    const search_start = peOverlayStartOffset(bytes) orelse 0;
+    const marker_relative = std.mem.lastIndexOf(u8, bytes[search_start..], config_start_marker) orelse return null;
+    const marker_start = search_start + marker_relative;
     const config_start = marker_start + config_start_marker.len;
     const remaining = bytes[config_start..];
     const end_relative = std.mem.indexOf(u8, remaining, config_end_marker);
@@ -121,6 +124,57 @@ pub fn embeddedConfigRangeFromBytes(bytes: []const u8) ?EmbeddedConfigRange {
         .suffix_start = suffix_start,
         .has_end_marker = end_relative != null,
     };
+}
+
+fn peOverlayStartOffset(bytes: []const u8) ?usize {
+    const dos_lfanew_offset = 0x3c;
+    if (bytes.len < dos_lfanew_offset + @sizeOf(u32)) return null;
+    if (!std.mem.eql(u8, bytes[0..2], "MZ")) return null;
+
+    const pe_offset: usize = @intCast(readLittleInt(u32, bytes, dos_lfanew_offset));
+    if (pe_offset > bytes.len or bytes.len - pe_offset < 24) return null;
+    if (!std.mem.eql(u8, bytes[pe_offset..][0..4], "PE\x00\x00")) return null;
+
+    const section_count: usize = readLittleInt(u16, bytes, pe_offset + 6);
+    const optional_header_size: usize = readLittleInt(u16, bytes, pe_offset + 20);
+    const optional_header_offset = pe_offset + 24;
+    if (optional_header_offset > bytes.len or optional_header_size > bytes.len - optional_header_offset) return null;
+
+    const section_header_size = 40;
+    const section_table_offset = optional_header_offset + optional_header_size;
+    if (section_table_offset > bytes.len) return null;
+    if (section_count > (bytes.len - section_table_offset) / section_header_size) return null;
+
+    var overlay_start = section_table_offset + section_count * section_header_size;
+    for (0..section_count) |index| {
+        const section_offset = section_table_offset + index * section_header_size;
+        const raw_size: usize = @intCast(readLittleInt(u32, bytes, section_offset + 16));
+        const raw_pointer: usize = @intCast(readLittleInt(u32, bytes, section_offset + 20));
+        if (raw_size == 0) continue;
+        if (raw_pointer > bytes.len or raw_size > bytes.len - raw_pointer) return null;
+        overlay_start = @max(overlay_start, raw_pointer + raw_size);
+    }
+
+    if (optional_header_size >= @sizeOf(u16)) {
+        const data_directories_offset = switch (readLittleInt(u16, bytes, optional_header_offset)) {
+            0x10b => @as(usize, 96),
+            0x20b => @as(usize, 112),
+            else => return null,
+        };
+        const security_directory_offset = data_directories_offset + 4 * 8;
+        if (optional_header_size >= security_directory_offset + 8) {
+            const directory_offset = optional_header_offset + security_directory_offset;
+            const certificate_pointer: usize = @intCast(readLittleInt(u32, bytes, directory_offset));
+            const certificate_size: usize = @intCast(readLittleInt(u32, bytes, directory_offset + 4));
+            if (certificate_pointer != 0 and certificate_size != 0) {
+                if (certificate_pointer > bytes.len or certificate_size > bytes.len - certificate_pointer) return null;
+                overlay_start = @max(overlay_start, certificate_pointer + certificate_size);
+            }
+        }
+    }
+
+    if (overlay_start > bytes.len) return null;
+    return overlay_start;
 }
 
 pub fn validateConfigBytes(bytes: []const u8) !void {
@@ -713,6 +767,63 @@ test "windows PE subsystem inspection identifies console and GUI executables" {
     try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes("not pe"));
 }
 
+test "windows PE subsystem inspection handles host console and GUI executables" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const system_root = std.process.getEnvVarOwned(allocator, "SystemRoot") catch return error.SkipZigTest;
+    defer allocator.free(system_root);
+
+    const cmd_path = try std.fs.path.join(allocator, &.{ system_root, "System32", "cmd.exe" });
+    defer allocator.free(cmd_path);
+    const notepad_path = try std.fs.path.join(allocator, &.{ system_root, "System32", "notepad.exe" });
+    defer allocator.free(notepad_path);
+
+    const cmd_bytes = try std.fs.cwd().readFileAlloc(allocator, cmd_path, 4 * 1024 * 1024);
+    defer allocator.free(cmd_bytes);
+    const notepad_bytes = try std.fs.cwd().readFileAlloc(allocator, notepad_path, 4 * 1024 * 1024);
+    defer allocator.free(notepad_bytes);
+
+    try std.testing.expectEqual(WindowsSubsystem.windows_console, try windowsSubsystemFromPeBytes(cmd_bytes));
+    try std.testing.expectEqual(WindowsSubsystem.windows_gui, try windowsSubsystemFromPeBytes(notepad_bytes));
+}
+
+test "embedded config ignores marker literals inside PE image" {
+    var bytes = [_]u8{0} ** 0x300;
+    writeMinimalPeHeader(&bytes, 0x200, 0x100);
+    @memcpy(bytes[0x220..][0..config_start_marker.len], config_start_marker);
+
+    try std.testing.expect(embeddedConfigRangeFromBytes(&bytes) == null);
+    try std.testing.expectError(error.NoEmbeddedConfig, embeddedConfigFromBytes(&bytes));
+}
+
+test "embedded config scans PE overlay after image data" {
+    const config_text = "{\"command\":[\"cmd.exe\"]}";
+    var bytes = [_]u8{0} ** (0x300 + config_start_marker.len + config_text.len);
+    writeMinimalPeHeader(&bytes, 0x200, 0x100);
+    @memcpy(bytes[0x220..][0..config_start_marker.len], config_start_marker);
+    @memcpy(bytes[0x300..][0..config_start_marker.len], config_start_marker);
+    @memcpy(bytes[0x300 + config_start_marker.len ..][0..config_text.len], config_text);
+
+    const range = embeddedConfigRangeFromBytes(&bytes).?;
+    try std.testing.expectEqual(@as(usize, 0x300), range.marker_start);
+    try std.testing.expectEqualStrings(config_text, try embeddedConfigFromBytes(&bytes));
+}
+
+fn writeMinimalPeHeader(bytes: []u8, raw_pointer: u32, raw_size: u32) void {
+    bytes[0] = 'M';
+    bytes[1] = 'Z';
+    std.mem.writeInt(u32, bytes[0x3c..][0..4], 0x80, .little);
+    @memcpy(bytes[0x80..][0..4], "PE\x00\x00");
+    std.mem.writeInt(u16, bytes[0x80 + 6 ..][0..2], 1, .little);
+    std.mem.writeInt(u16, bytes[0x80 + 20 ..][0..2], 0xf0, .little);
+    std.mem.writeInt(u16, bytes[0x80 + 24 ..][0..2], 0x20b, .little);
+
+    const section_offset = 0x80 + 24 + 0xf0;
+    std.mem.writeInt(u32, bytes[section_offset + 16 ..][0..4], raw_size, .little);
+    std.mem.writeInt(u32, bytes[section_offset + 20 ..][0..4], raw_pointer, .little);
+}
+
 test "embedded config reads to EOF when end marker is absent" {
     const bytes = "base bytes" ++ config_start_marker ++ "{\"command\":[\"cmd.exe\"]}";
     const config = try embeddedConfigFromBytes(bytes);
@@ -910,6 +1021,52 @@ test "command resolver uses final cwd PATH and PATHEXT" {
     });
     try std.testing.expect(unsupported_resolved.found);
     try std.testing.expectEqualStrings("C:\\Tools\\script.EXE", unsupported_resolved.executable_path);
+}
+
+test "command resolver supports batch scripts but skips extensionless VBS" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var env_map = std.process.EnvMap.init(allocator);
+    try env_map.put("PATH", "C:\\Tools");
+    try env_map.put("PATHEXT", ".VBS;.BAT;.CMD;.EXE");
+
+    const mock = MockFiles{ .paths = &.{
+        "C:\\Tools\\only_vbs.VBS",
+        "C:\\Tools\\tool.BAT",
+        "C:\\Tools\\script.CMD",
+    } };
+
+    const bat_command = [_][]const u8{"tool"};
+    const bat_resolved = try command_resolve.resolveCommandForSpawn(allocator, &bat_command, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+    try std.testing.expect(bat_resolved.found);
+    try std.testing.expectEqualStrings("C:\\Tools\\tool.BAT", bat_resolved.executable_path);
+
+    const cmd_command = [_][]const u8{"script"};
+    const cmd_resolved = try command_resolve.resolveCommandForSpawn(allocator, &cmd_command, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+    try std.testing.expect(cmd_resolved.found);
+    try std.testing.expectEqualStrings("C:\\Tools\\script.CMD", cmd_resolved.executable_path);
+
+    const vbs_command = [_][]const u8{"only_vbs"};
+    const vbs_resolved = try command_resolve.resolveCommandForSpawn(allocator, &vbs_command, .{
+        .cwd = "C:\\App",
+        .env_map = &env_map,
+        .file_exists = MockFiles.exists,
+        .file_exists_context = &mock,
+    });
+    try std.testing.expect(!vbs_resolved.found);
+    try std.testing.expectEqualStrings("only_vbs", vbs_resolved.executable_path);
 }
 
 test "command resolver leaves unresolved commands untouched" {
