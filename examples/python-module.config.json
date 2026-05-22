@@ -1,12 +1,11 @@
 {
-  "terminal": true,
-  "cwd": "@{exe_parent:join("app")}",
+  "cwd": "@{exe_dir:parent:join("app")}",
   "env": {
-    "PYTHONHOME": "@{exe_parent:join("python")}",
-    "PYTHONPATH": "@{exe_parent:join("app")}"
+    "PYTHONHOME": "@{exe_dir:parent:join("python")}",
+    "PYTHONPATH": "@{exe_dir:parent:join("app")}"
   },
   "command": [
-    "@{exe_parent:join("python"):join("python.exe")}",
+    "@{exe_dir:parent:join("python"):join("python.exe")}",
     "-m",
     "my_module",
     "--example-arg",

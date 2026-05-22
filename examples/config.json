@@ -1,5 +1,4 @@
 ﻿{
-  "terminal": true,
   "cwd": "@{exe_dir}",
   "env": {
     "LAUNCHER_EXAMPLE": "launched from @{exe_filename_noext:upper}",
