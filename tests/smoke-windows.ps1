@@ -109,6 +109,20 @@ try {
   if ($terminalOutput -notmatch 'terminal.*removed') {
     throw "Removed terminal migration message was not reported. Output: $terminalOutput"
   }
+
+  $badBoolConfig = Join-Path $tmp "bad-bool.config.json"
+  Write-Utf8NoBom $badBoolConfig '{"kill_children_on_exit":"true","command":["cmd.exe","/C","exit /b 0"]}'
+  $badBoolExe = Join-Path $tmp "bad-bool.exe"
+  & $stamper --launcher $consoleLauncher --config $badBoolConfig $badBoolExe
+  if ($LASTEXITCODE -ne 0) { throw "Stamper should allow syntactically valid config bytes before runtime parsing." }
+  $badBoolStdout = Join-Path $tmp "bad-bool.stdout.txt"
+  $badBoolStderr = Join-Path $tmp "bad-bool.stderr.txt"
+  $badBoolProcess = Start-Process -FilePath $badBoolExe -NoNewWindow -Wait -PassThru -RedirectStandardOutput $badBoolStdout -RedirectStandardError $badBoolStderr
+  $badBoolOutput = ((Get-Content -Raw -ErrorAction SilentlyContinue $badBoolStdout) + (Get-Content -Raw -ErrorAction SilentlyContinue $badBoolStderr))
+  if ($badBoolProcess.ExitCode -eq 0) { throw "Config containing non-boolean kill_children_on_exit unexpectedly succeeded." }
+  if ($badBoolOutput -notmatch 'kill_children_on_exit.*boolean') {
+    throw "Non-boolean kill_children_on_exit message was not reported. Output: $badBoolOutput"
+  }
 } finally {
   Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

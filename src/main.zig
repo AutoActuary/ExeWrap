@@ -173,6 +173,18 @@ fn reportConfigError(err: anyerror) void {
             "ExeWrap config error: missing required final top-level field \"command\".\n",
             .{},
         ),
+        error.KillChildrenOnExitMustBeBoolean => std.debug.print(
+            "ExeWrap config error: \"kill_children_on_exit\" must be a boolean.\n",
+            .{},
+        ),
+        error.ErrorOnMissingEnvMustBeBoolean => std.debug.print(
+            "ExeWrap config error: \"error_on_missing_env\" must be a boolean.\n",
+            .{},
+        ),
+        error.ErrorOnArgOutOfBoundsMustBeBoolean => std.debug.print(
+            "ExeWrap config error: \"error_on_arg_out_of_bounds\" must be a boolean.\n",
+            .{},
+        ),
         else => std.debug.print("ExeWrap config error: {s}\n", .{@errorName(err)}),
     }
 }
