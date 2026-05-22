@@ -201,7 +201,7 @@ entries. A list expression such as `@{args}` can appear as a raw array item:
 ```
 
 The source file above is templated JSON. It becomes strict JSON after the
-launcher replaces template expressions with internal sentinel strings. That is
+launcher replaces template expressions with internal numeric sentinels. That is
 why raw array entries such as `@{args}` and normal quotes in expressions such as
 `join("python")` are allowed.
 
