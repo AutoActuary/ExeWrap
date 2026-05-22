@@ -101,20 +101,24 @@ The implementation follows the processing model from the spec.
 ### Pass 1: Template-Aware Scan
 
 `src/template_scan.zig` scans raw UTF-8 bytes before JSON parsing. It replaces
-each template expression with a random UUID-shaped sentinel and records:
+each template expression with a random 39-digit decimal sentinel and records:
 
-- The sentinel UUID.
+- The bare sentinel key.
 - The raw expression text.
 - The original byte range.
-- Whether the expression appeared as a raw JSON value, a whole string, or part
-  of a string.
 
-The random UUID strategy avoids predictable placeholders such as
-`__EXPR_0001__`, which could collide with user text. The scanner retries when a
-generated UUID appears in the original input or duplicates a previous sentinel.
+The sentinel key starts with `1` and has 38 following random digits. The scanner
+writes it back into the source as ` space + key + space `, regardless of whether
+the template appeared inside or outside a JSON string:
 
-Raw array splices such as `@{args}` become quoted sentinel strings during this
-pass, so the next pass receives strict JSON.
+```text
+@{expr} -> <space>100000000000000000000000000000000000123<space>
+```
+
+That representation keeps raw template values valid JSON numbers while keeping
+string templates valid JSON string content. The wrapper spaces make malformed
+adjacency such as `1@{args}` remain invalid after preprocessing instead of
+silently merging into another JSON number.
 
 ### Pass 2: JSON Parse And Structural Validation
 
@@ -123,17 +127,23 @@ some loose JSON readers but would make source-order environment semantics
 ambiguous, so they are a config error here.
 
 After duplicate-key rejection, the transformed bytes are parsed with Zig's JSON
-parser. Object keys are checked for sentinels and rejected if a template appeared
-inside a key. Keys stay literal to keep config shape predictable.
+parser using `.parse_numbers = false`. JSON numbers therefore remain
+`.number_string` values instead of becoming fixed-size numeric types. Object
+keys are checked for generated spaced sentinels and rejected if a template
+appeared inside a key. Keys stay literal to keep config shape predictable.
 
 ### Pass 3: Config Walk And Evaluation
 
 The config walker evaluates sentinels in values:
 
-- A string expression can replace a whole string or part of a string.
-- A list expression can replace a full command-array item.
+- A raw `.number_string` sentinel can replace a command-array item, and it must
+  evaluate to a list of strings.
+- A spaced sentinel embedded in a JSON string can replace a whole string or part
+  of a string, and it must evaluate to one string.
 - A list expression inside a larger string is rejected because one string cannot
   expand into multiple argv entries.
+- Ordinary JSON numbers are unsupported by the current schema and are rejected
+  unless they exactly match a generated sentinel key in a command-array item.
 
 Environment entries are evaluated and immediately written back into the mutable
 environment map. Later environment entries and the command array can read the
@@ -278,8 +288,8 @@ The implementation intentionally keeps several items small or explicit:
 
 The tests are split by layer:
 
-- `src/template_scan.zig`: literal escapes, raw-value sentinels, string
-  sentinels, nested quotes/parentheses, sentinel collision retries, and malformed
+- `src/template_scan.zig`: literal escapes, raw-value numeric sentinels, string
+  sentinels, nested quotes/parentheses, sentinel key validation, and malformed
   templates.
 - `src/template_expr.zig`: tokenizer/parser behavior, base values, path/string
   transforms, environment lookup strictness, argument slicing, env-list

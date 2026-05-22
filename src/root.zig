@@ -274,7 +274,10 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
     defer scanned.deinit(allocator);
     try rejectDuplicateKeys(allocator, scanned.json);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, scanned.json, .{ .allocate = .alloc_always });
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, scanned.json, .{
+        .allocate = .alloc_always,
+        .parse_numbers = false,
+    });
     const root = switch (parsed.value) {
         .object => |object| object,
         else => return error.ConfigMustBeObject,
@@ -389,22 +392,18 @@ fn evalCommand(
 
     var command: std.ArrayList([]const u8) = .empty;
     for (array.items) |item| {
-        const raw = switch (item) {
-            .string => |s| s,
+        switch (item) {
+            .number_string => |key| {
+                const sentinel = findSentinelKey(key, sentinels) orelse return error.CommandEntriesMustBeStrings;
+                const value_result = try template_expr.evaluate(sentinel.expression, ctx);
+                switch (value_result) {
+                    .list => |items| try command.appendSlice(allocator, items),
+                    .string, .integer => return error.TemplateMustEvaluateToList,
+                }
+            },
+            .string => |raw| try command.append(allocator, try evalTemplateString(allocator, raw, ctx, sentinels)),
             else => return error.CommandEntriesMustBeStrings,
-        };
-
-        if (findExactSentinel(raw, sentinels)) |sentinel| {
-            const value_result = try template_expr.evaluate(sentinel.expression, ctx);
-            switch (value_result) {
-                .string => |s| try command.append(allocator, s),
-                .list => |items| try command.appendSlice(allocator, items),
-                .integer => return error.TemplateMustEvaluateToString,
-            }
-            continue;
         }
-
-        try command.append(allocator, try evalTemplateString(allocator, raw, ctx, sentinels));
     }
     return try command.toOwnedSlice(allocator);
 }
@@ -415,54 +414,63 @@ fn evalTemplateString(
     ctx: *template_expr.EvalContext,
     sentinels: []const template_scan.Sentinel,
 ) ![]const u8 {
-    if (findExactSentinel(raw, sentinels)) |sentinel| {
-        const value = try template_expr.evaluate(sentinel.expression, ctx);
-        return switch (value) {
-            .string => |s| s,
-            .list => error.ListTemplateNotAllowedInString,
-            .integer => error.TemplateMustEvaluateToString,
-        };
-    }
-
     var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
     var i: usize = 0;
     var changed = false;
     while (i < raw.len) {
-        if (findSentinelAt(raw[i..], sentinels)) |sentinel| {
-            const value = try template_expr.evaluate(sentinel.expression, ctx);
-            switch (value) {
+        if (findSpacedSentinelAt(raw[i..], sentinels)) |match| {
+            const value_result = try template_expr.evaluate(match.sentinel.expression, ctx);
+            switch (value_result) {
                 .string => |s| try out.appendSlice(allocator, s),
                 .list => return error.ListTemplateNotAllowedInString,
                 .integer => return error.TemplateMustEvaluateToString,
             }
-            i += sentinel.uuid.len;
+            i += match.len;
             changed = true;
             continue;
         }
         try out.append(allocator, raw[i]);
         i += 1;
     }
-    if (!changed) return raw;
+    if (!changed) {
+        out.deinit(allocator);
+        return raw;
+    }
     return try out.toOwnedSlice(allocator);
 }
 
-fn findExactSentinel(value: []const u8, sentinels: []const template_scan.Sentinel) ?template_scan.Sentinel {
+const SpacedSentinelMatch = struct {
+    sentinel: template_scan.Sentinel,
+    len: usize,
+};
+
+fn findSentinelKey(key: []const u8, sentinels: []const template_scan.Sentinel) ?template_scan.Sentinel {
     for (sentinels) |sentinel| {
-        if (std.mem.eql(u8, value, sentinel.uuid)) return sentinel;
+        if (std.mem.eql(u8, key, sentinel.key)) return sentinel;
     }
     return null;
 }
 
-fn findSentinelAt(value: []const u8, sentinels: []const template_scan.Sentinel) ?template_scan.Sentinel {
-    for (sentinels) |sentinel| {
-        if (std.mem.startsWith(u8, value, sentinel.uuid)) return sentinel;
-    }
-    return null;
+fn findSpacedSentinelAt(value: []const u8, sentinels: []const template_scan.Sentinel) ?SpacedSentinelMatch {
+    if (value.len < template_scan.spaced_sentinel_len) return null;
+    if (value[0] != ' ') return null;
+    const key_start: usize = 1;
+    const key_end = key_start + template_scan.sentinel_key_len;
+    if (value[key_end] != ' ') return null;
+    const key = value[key_start..key_end];
+    if (!template_scan.isNumericSentinelKey(key)) return null;
+    const sentinel = findSentinelKey(key, sentinels) orelse return null;
+    return .{
+        .sentinel = sentinel,
+        .len = template_scan.spaced_sentinel_len,
+    };
 }
 
 fn stringContainsSentinel(value: []const u8, sentinels: []const template_scan.Sentinel) bool {
-    for (sentinels) |sentinel| {
-        if (std.mem.indexOf(u8, value, sentinel.uuid) != null) return true;
+    var i: usize = 0;
+    while (i < value.len) : (i += 1) {
+        if (findSpacedSentinelAt(value[i..], sentinels) != null) return true;
     }
     return false;
 }
@@ -1173,6 +1181,121 @@ test "rejects unsafe list contexts object key templates and duplicate keys" {
         allocator,
         "{\"command\":[\"one\"],\"command\":[\"two\"]}",
         .{ .paths = paths, .args = &.{}, .env_map = &env_map },
+    ));
+}
+
+test "raw numeric command sentinels only accept list templates" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+    const args = [_][]const u8{ "a", "b" };
+
+    try std.testing.expectError(error.TemplateMustEvaluateToList, parseConfigWithOptions(
+        allocator,
+        "{\"command\":[@{args:1}]}",
+        .{ .paths = paths, .args = &args, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.ListTemplateNotAllowedInString, parseConfigWithOptions(
+        allocator,
+        "{\"command\":[\"@{args}\"]}",
+        .{ .paths = paths, .args = &args, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.CommandEntriesMustBeStrings, parseConfigWithOptions(
+        allocator,
+        "{\"command\":[1]}",
+        .{ .paths = paths, .args = &args, .env_map = &env_map },
+    ));
+}
+
+test "raw numeric sentinel positions are limited to command entries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+
+    try std.testing.expectError(error.CwdMustBeString, parseConfigWithOptions(
+        allocator,
+        "{\"cwd\":@{exe_dir},\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.EnvValuesMustBeStrings, parseConfigWithOptions(
+        allocator,
+        "{\"env\":{\"NAME\":@{exe_dir}},\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+}
+
+test "string interpolation removes only inserted sentinel wrapper spaces" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\Bundle\\bin\\tool.exe",
+        .exe_dir = "C:\\Bundle\\bin",
+        .exe_name = "tool.exe",
+        .exe_stem = "tool",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+    const args = [_][]const u8{ "alpha", "beta", "gamma" };
+    const json =
+        \\{
+        \\  "command": [
+        \\    "pre@{args:1}post",
+        \\    "@{args:2} @{args:3}",
+        \\    "@@{literal}"
+        \\  ]
+        \\}
+    ;
+
+    const config = try parseConfigWithOptions(allocator, json, .{
+        .paths = paths,
+        .args = &args,
+        .env_map = &env_map,
+    });
+
+    try std.testing.expectEqual(@as(usize, 3), config.command.len);
+    try std.testing.expectEqualStrings("prealphapost", config.command[0]);
+    try std.testing.expectEqualStrings("beta gamma", config.command[1]);
+    try std.testing.expectEqualStrings("@{literal}", config.command[2]);
+}
+
+test "malformed adjacency around raw templates remains invalid JSON" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+    const args = [_][]const u8{ "a", "b" };
+
+    try std.testing.expectError(error.InvalidJson, parseConfigWithOptions(
+        allocator,
+        "{\"command\":[1@{args}]}",
+        .{ .paths = paths, .args = &args, .env_map = &env_map },
     ));
 }
 
