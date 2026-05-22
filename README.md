@@ -54,7 +54,7 @@ ExeWrap-stamper.exe `
 Arguments are:
 
 ```text
-ExeWrap-stamper.exe --launcher <base-launcher.exe> --config <config.json> [--icon <logo.ico>] [--subsystem inherit|console|windowed|gui] <output.exe>
+ExeWrap-stamper.exe --launcher <base-launcher.exe> --config <config.json> [--icon <logo.ico>] [--subsystem inherit|console|windowed] <output.exe>
 ```
 
 `--icon` is optional. When present, the stamp helper writes the icon into the
@@ -62,8 +62,7 @@ output executable before appending the config overlay.
 
 `--subsystem` is optional and defaults to `inherit`, which preserves the
 subsystem of the `--launcher` input. Use `console` for command-line shims and
-`windowed` for GUI/background launchers. `gui` is accepted as an alias for
-`windowed`.
+`windowed` for GUI/background launchers.
 
 You can stamp either a base launcher or an already stamped executable. When
 restamping, the stamper replaces the existing embedded config instead of
