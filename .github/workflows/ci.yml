@@ -80,6 +80,7 @@ jobs:
         with:
           name: ExeWrap-${{ matrix.label }}
           path: |
-            zig-out/bin/ExeWrap.exe
+            zig-out/bin/ExeWrap-console.exe
+            zig-out/bin/ExeWrap-windowed.exe
             zig-out/bin/ExeWrap-stamper.exe
           if-no-files-found: error

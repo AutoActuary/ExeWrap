@@ -51,7 +51,8 @@ jobs:
           $assetBase = "ExeWrap-$tag-${{ matrix.label }}"
           $packageDir = Join-Path "dist" $assetBase
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-          Copy-Item zig-out/bin/ExeWrap.exe $packageDir
+          Copy-Item zig-out/bin/ExeWrap-console.exe $packageDir
+          Copy-Item zig-out/bin/ExeWrap-windowed.exe $packageDir
           Copy-Item zig-out/bin/ExeWrap-stamper.exe $packageDir
           Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath "dist/$assetBase.zip" -Force
           $hash = Get-FileHash "dist/$assetBase.zip" -Algorithm SHA256
