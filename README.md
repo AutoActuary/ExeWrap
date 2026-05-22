@@ -82,7 +82,7 @@ final exe location, so `@{exe_dir}` follows the stamped file.
 
 Config files are JSON with a small overlay template syntax. Use `@{name}` to
 insert launcher values, and chain transforms such as
-`@{exe_parent:join("python"):join("python.exe")}` for paths, strings,
+`@{exe_dir:parent:join("python"):join("python.exe")}` for paths, strings,
 environment values, and arguments. See "Template Expressions" for base values,
 lookups, and transforms.
 
@@ -165,7 +165,7 @@ Use PowerShell explicitly when you need PowerShell syntax:
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    "@{exe_parent:join("scripts"):join("start.ps1")}"
+    "@{exe_dir:parent:join("scripts"):join("start.ps1")}"
   ]
 }
 ```
@@ -212,7 +212,6 @@ why raw array entries such as `@{args}` and normal quotes in expressions such as
 | --- | --- |
 | `exe_path` | Full path to the stamped executable. |
 | `exe_dir` | Directory containing the stamped executable. |
-| `exe_parent` | Parent of `exe_dir`. |
 | `exe_filename` | Stamped executable file name. |
 | `exe_filename_noext` | File name without extension. |
 | `exe_ext` | Extension without the dot. |
@@ -273,7 +272,7 @@ arguments.
 | `filename_noext` | `@{exe_path:filename_noext}` |
 | `ext` / `ext_dot` | `@{exe_path:ext_dot}` |
 | `drive` / `root` | `@{exe_path:drive}` |
-| `join("part")` | `@{exe_parent:join("python"):join("python.exe")}` |
+| `join("part")` | `@{exe_dir:parent:join("python"):join("python.exe")}` |
 | `normalize` | `@{exe_dir:join("..\\app"):normalize}` |
 | `slash` / `backslash` | `@{exe_path:slash}` |
 
@@ -311,7 +310,7 @@ Example:
 ```json
 {
   "env": {
-    "PATH": "@{env:"PATH":prepend_env(exe_parent:join("python")):unique_env}"
+    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python")):unique_env}"
   },
   "command": ["cmd.exe", "/C", "where python && pause"]
 }
@@ -368,8 +367,8 @@ variables.
 ```json
 {
   "env": {
-    "APP_HOME": "@{exe_parent:join("app")}",
-    "PYTHONPATH": "@{exe_parent:join("app")}"
+    "APP_HOME": "@{exe_dir:parent:join("app")}",
+    "PYTHONPATH": "@{exe_dir:parent:join("app")}"
   },
   "command": ["cmd.exe", "/C", "echo %APP_HOME%"]
 }
@@ -378,7 +377,7 @@ variables.
 ```json
 {
   "env": {
-    "PATH": "@{env:"PATH":prepend_env(exe_parent:join("python"))}",
+    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}",
     "PATH_AFTER": "@{env:"PATH"}"
   },
   "command": ["cmd.exe", "/C", "echo %PATH_AFTER%"]
@@ -411,17 +410,17 @@ Config for `bundle\bin\my-tool.exe`:
 
 ```json
 {
-  "cwd": "@{exe_parent:join("app")}",
+  "cwd": "@{exe_dir:parent:join("app")}",
   "env": {
-    "PYTHONHOME": "@{exe_parent:join("python")}",
-    "PYTHONPATH": "@{exe_parent:join("app")}"
+    "PYTHONHOME": "@{exe_dir:parent:join("python")}",
+    "PYTHONPATH": "@{exe_dir:parent:join("app")}"
   },
   "command": [
-    "@{exe_parent:join("python"):join("python.exe")}",
+    "@{exe_dir:parent:join("python"):join("python.exe")}",
     "-m",
     "my_module",
     "--input",
-    "@{exe_parent:join("data"):join("input.json")}",
+    "@{exe_dir:parent:join("data"):join("input.json")}",
     @{args}
   ]
 }
@@ -445,9 +444,9 @@ console window.
 ```json
 {
   "kill_children_on_exit": true,
-  "cwd": "@{exe_parent:join("app")}",
+  "cwd": "@{exe_dir:parent:join("app")}",
   "command": [
-    "@{exe_parent:join("python"):join("python.exe")}",
+    "@{exe_dir:parent:join("python"):join("python.exe")}",
     "-m",
     "my_worker"
   ]
@@ -555,8 +554,8 @@ default is:
 
 ```json
 {
-  "cwd": "@{exe_parent:join("app")}",
-  "command": ["@{exe_parent:join("python"):join("python.exe")}", "-m", "my_module"]
+  "cwd": "@{exe_dir:parent:join("app")}",
+  "command": ["@{exe_dir:parent:join("python"):join("python.exe")}", "-m", "my_module"]
 }
 ```
 
