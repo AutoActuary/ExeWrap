@@ -91,7 +91,7 @@ scanner keeps reading until it finds a `}` outside template strings and outside
 parenthesized transform arguments. This lets expressions contain values such as:
 
 ```text
-@{env:"PATH":prepend_env(exe_parent:join("python"))}
+@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}
 ```
 
 ## Three Processing Passes
@@ -146,7 +146,7 @@ ad hoc string splitting. That is necessary because transform arguments can be
 quoted strings or nested expressions:
 
 ```text
-@{env:"PATH":prepend_env(exe_parent:join("python"))}
+@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}
 ```
 
 The evaluator uses explicit value types:
@@ -176,7 +176,7 @@ The spec calls for source-order environment mutation so users can write:
 ```json
 {
   "env": {
-    "PATH": "@{env:"PATH":prepend_env(exe_parent:join("python"))}",
+    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}",
     "PATH_AFTER": "@{env:"PATH"}"
   },
   "command": ["@{env:"PATH_AFTER"}"]

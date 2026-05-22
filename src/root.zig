@@ -22,7 +22,6 @@ pub const RuntimePaths = struct {
     exe_ext_dot: []const u8 = "",
     exe_drive: []const u8 = "",
     exe_root: []const u8 = "",
-    exe_parent: []const u8 = "",
     launch_cwd: []const u8,
     temp_dir: []const u8 = "",
     home_dir: []const u8 = "",
@@ -52,7 +51,6 @@ pub const RuntimePaths = struct {
             .exe_ext_dot = exe_ext_dot,
             .exe_drive = std.fs.path.diskDesignator(exe_path),
             .exe_root = pathRoot(exe_path),
-            .exe_parent = std.fs.path.dirname(exe_dir) orelse exe_dir,
             .launch_cwd = launch_cwd,
             .temp_dir = try getEnvVarOrEmpty(allocator, "TEMP"),
             .home_dir = home_dir,
@@ -629,7 +627,6 @@ fn metadataFromRuntime(paths: RuntimePaths, args0: []const u8) template_expr.Met
         .exe_ext_dot = paths.exe_ext_dot,
         .exe_drive = paths.exe_drive,
         .exe_root = paths.exe_root,
-        .exe_parent = paths.exe_parent,
         .args0 = args0,
         .cwd = paths.launch_cwd,
         .temp_dir = paths.temp_dir,
@@ -1053,7 +1050,6 @@ test "templated JSON command supports raw quotes and args splicing" {
         .exe_dir = "C:\\Bundle\\bin",
         .exe_name = "tool.exe",
         .exe_stem = "tool",
-        .exe_parent = "C:\\Bundle",
         .launch_cwd = "C:\\work",
     };
     var env_map = std.process.EnvMap.init(allocator);
@@ -1094,7 +1090,6 @@ test "environment values mutate in source order and command sees final env" {
         .exe_dir = "C:\\Bundle\\bin",
         .exe_name = "tool.exe",
         .exe_stem = "tool",
-        .exe_parent = "C:\\Bundle",
         .launch_cwd = "C:\\work",
     };
     var env_map = std.process.EnvMap.init(allocator);
@@ -1102,7 +1097,7 @@ test "environment values mutate in source order and command sees final env" {
     const json =
         \\{
         \\  "env": {
-        \\    "PATH": "@{env:"PATH":prepend_env(exe_parent:join("python"))}",
+        \\    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}",
         \\    "PATH_AFTER": "@{env:"PATH"}"
         \\  },
         \\  "command": ["@{env:"PATH_AFTER"}"]

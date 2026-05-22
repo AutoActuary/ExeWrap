@@ -14,7 +14,6 @@ pub const Metadata = struct {
     exe_ext_dot: []const u8,
     exe_drive: []const u8,
     exe_root: []const u8,
-    exe_parent: []const u8,
     args0: []const u8,
     cwd: []const u8,
     temp_dir: []const u8,
@@ -391,7 +390,6 @@ fn resolveBase(ctx: *EvalContext, name: []const u8) ![]const u8 {
     if (std.mem.eql(u8, name, "exe_ext_dot")) return metadata.exe_ext_dot;
     if (std.mem.eql(u8, name, "exe_drive")) return metadata.exe_drive;
     if (std.mem.eql(u8, name, "exe_root")) return metadata.exe_root;
-    if (std.mem.eql(u8, name, "exe_parent")) return metadata.exe_parent;
     if (std.mem.eql(u8, name, "args0")) return metadata.args0;
     if (std.mem.eql(u8, name, "cwd")) return metadata.cwd;
     if (std.mem.eql(u8, name, "temp_dir")) return metadata.temp_dir;
@@ -978,7 +976,6 @@ const test_metadata = Metadata{
     .exe_ext_dot = ".exe",
     .exe_drive = "C:",
     .exe_root = "C:\\",
-    .exe_parent = "C:\\Bundle",
     .args0 = ".\\tool.exe",
     .cwd = "C:\\Users\\Simon",
     .temp_dir = "C:\\Users\\Simon\\AppData\\Local\\Temp",
@@ -1143,7 +1140,7 @@ test "environment list transforms preserve order and avoid empty-list separators
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("C:\\Bundle\\Python;C:\\A;;C:\\B;C:\\A", try evaluate("env:\"PATH\":prepend_env(exe_parent:join(\"Python\"))", &ctx));
+    try expectStringValue("C:\\Bundle\\Python;C:\\A;;C:\\B;C:\\A", try evaluate("env:\"PATH\":prepend_env(exe_dir:parent:join(\"Python\"))", &ctx));
     try expectStringValue("C:\\A;;C:\\B;C:\\A;C:\\Tools", try evaluate("env:\"PATH\":append_env(\"C:\\\\Tools\")", &ctx));
     try expectStringValue("C:\\A;;C:\\A", try evaluate("env:\"PATH\":remove_env(\"C:\\\\B\")", &ctx));
     try expectStringValue("C:\\A;;C:\\B", try evaluate("env:\"PATH\":unique_env", &ctx));
