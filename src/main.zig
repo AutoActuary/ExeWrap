@@ -5,7 +5,6 @@ const windows = std.os.windows;
 
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x00002000;
 const JobObjectExtendedLimitInformation: u32 = 9;
-const max_pe_probe_bytes: usize = 4 * 1024 * 1024;
 
 const JOBOBJECT_BASIC_LIMIT_INFORMATION = extern struct {
     PerProcessUserTimeLimit: i64 = 0,
@@ -93,7 +92,7 @@ pub fn main() !void {
     const terminal_visible = switch (config.terminal) {
         .visible => true,
         .hidden => false,
-        .auto => detectTerminalVisibility(scratch, resolved_command.executable_path),
+        .auto => launcher.detectTerminalVisibility(scratch, resolved_command.executable_path),
     };
 
     child.create_no_window = !terminal_visible;
@@ -119,15 +118,6 @@ pub fn main() !void {
         .Stopped => |_| std.process.exit(1),
         .Unknown => |_| std.process.exit(1),
     }
-}
-
-fn detectTerminalVisibility(
-    allocator: std.mem.Allocator,
-    executable_path: []const u8,
-) bool {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, executable_path, max_pe_probe_bytes) catch return true;
-    const subsystem = launcher.windowsSubsystemFromPeBytes(bytes) catch return true;
-    return launcher.terminalVisibleFromWindowsSubsystem(subsystem) orelse true;
 }
 
 fn spawnWithKillOnCloseJob(child: *std.process.Child) !std.process.Child.Term {

@@ -10,6 +10,7 @@ pub const end_marker_uuid = "ce3beca3-7ed2-40a4-9133-f82198be1d7b";
 pub const config_start_marker = marker_uuid;
 pub const config_end_marker = end_marker_uuid;
 pub const max_exe_bytes = 512 * 1024 * 1024;
+pub const max_pe_probe_bytes: usize = 4 * 1024 * 1024;
 
 pub const RuntimePaths = struct {
     exe_path: []const u8,
@@ -461,6 +462,16 @@ pub fn terminalVisibleFromWindowsSubsystem(subsystem: WindowsSubsystem) ?bool {
     };
 }
 
+pub fn detectTerminalVisibility(
+    allocator: std.mem.Allocator,
+    executable_path: []const u8,
+) bool {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, executable_path, max_pe_probe_bytes) catch return true;
+    defer allocator.free(bytes);
+    const subsystem = windowsSubsystemFromPeBytes(bytes) catch return true;
+    return terminalVisibleFromWindowsSubsystem(subsystem) orelse true;
+}
+
 fn readLittleInt(comptime T: type, bytes: []const u8, offset: usize) T {
     return std.mem.readInt(T, bytes[offset..][0..@sizeOf(T)], .little);
 }
@@ -767,6 +778,40 @@ test "windows PE subsystem inspection identifies console and GUI executables" {
     try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes("not pe"));
 }
 
+test "windows PE subsystem inspection rejects malformed inputs without overread" {
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(""));
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes("MZ"));
+
+    var bad_offset = [_]u8{0} ** 0x40;
+    bad_offset[0] = 'M';
+    bad_offset[1] = 'Z';
+    std.mem.writeInt(u32, bad_offset[0x3c..][0..4], 0x80, .little);
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&bad_offset));
+
+    var bad_signature = [_]u8{0} ** 0x100;
+    bad_signature[0] = 'M';
+    bad_signature[1] = 'Z';
+    std.mem.writeInt(u32, bad_signature[0x3c..][0..4], 0x80, .little);
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&bad_signature));
+
+    var short_optional = [_]u8{0} ** 0x100;
+    short_optional[0] = 'M';
+    short_optional[1] = 'Z';
+    std.mem.writeInt(u32, short_optional[0x3c..][0..4], 0x80, .little);
+    @memcpy(short_optional[0x80..][0..4], "PE\x00\x00");
+    std.mem.writeInt(u16, short_optional[0x80 + 20 ..][0..2], 2, .little);
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&short_optional));
+
+    var bad_magic = [_]u8{0} ** 0x100;
+    bad_magic[0] = 'M';
+    bad_magic[1] = 'Z';
+    std.mem.writeInt(u32, bad_magic[0x3c..][0..4], 0x80, .little);
+    @memcpy(bad_magic[0x80..][0..4], "PE\x00\x00");
+    std.mem.writeInt(u16, bad_magic[0x80 + 20 ..][0..2], 0xf0, .little);
+    std.mem.writeInt(u16, bad_magic[0x80 + 24 ..][0..2], 0x999, .little);
+    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&bad_magic));
+}
+
 test "windows PE subsystem inspection handles host console and GUI executables" {
     if (builtin.os.tag != .windows) return error.SkipZigTest;
 
@@ -786,6 +831,53 @@ test "windows PE subsystem inspection handles host console and GUI executables" 
 
     try std.testing.expectEqual(WindowsSubsystem.windows_console, try windowsSubsystemFromPeBytes(cmd_bytes));
     try std.testing.expectEqual(WindowsSubsystem.windows_gui, try windowsSubsystemFromPeBytes(notepad_bytes));
+}
+
+test "terminal auto visibility probe handles ragtag command paths" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const system_root = std.process.getEnvVarOwned(allocator, "SystemRoot") catch return error.SkipZigTest;
+    defer allocator.free(system_root);
+
+    var checked: usize = 0;
+    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "cmd.exe" }), true);
+    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "where.exe" }), true);
+    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "notepad.exe" }), false);
+    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "wscript.exe" }), false);
+    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe" }), true);
+    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "SysWOW64", "cmd.exe" }), true);
+
+    if (std.process.getEnvVarOwned(allocator, "ProgramFiles")) |program_files| {
+        defer allocator.free(program_files);
+        checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ program_files, "7-Zip", "7z.exe" }), true);
+        checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ program_files, "7-Zip", "7zFM.exe" }), false);
+    } else |_| {}
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "probe.cmd", .data = "@echo off\r\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "probe.bat", .data = "@echo off\r\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "plain.txt", .data = "plain text is not a PE file\r\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "truncated.exe", .data = "MZ" });
+
+    const cmd_script = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "probe.cmd" });
+    defer allocator.free(cmd_script);
+    const bat_script = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "probe.bat" });
+    defer allocator.free(bat_script);
+    const text_file = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "plain.txt" });
+    defer allocator.free(text_file);
+    const truncated_exe = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "truncated.exe" });
+    defer allocator.free(truncated_exe);
+    const missing_exe = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "missing.exe" });
+    defer allocator.free(missing_exe);
+
+    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, cmd_script));
+    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, bat_script));
+    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, text_file));
+    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, truncated_exe));
+    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, missing_exe));
+    try std.testing.expect(checked >= 4);
 }
 
 test "embedded config ignores marker literals inside PE image" {
@@ -822,6 +914,17 @@ fn writeMinimalPeHeader(bytes: []u8, raw_pointer: u32, raw_size: u32) void {
     const section_offset = 0x80 + 24 + 0xf0;
     std.mem.writeInt(u32, bytes[section_offset + 16 ..][0..4], raw_size, .little);
     std.mem.writeInt(u32, bytes[section_offset + 20 ..][0..4], raw_pointer, .little);
+}
+
+fn expectAutoVisibilityIfExists(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    expected: bool,
+) !usize {
+    defer allocator.free(path);
+    std.fs.cwd().access(path, .{}) catch return 0;
+    try std.testing.expectEqual(expected, detectTerminalVisibility(allocator, path));
+    return 1;
 }
 
 test "embedded config reads to EOF when end marker is absent" {

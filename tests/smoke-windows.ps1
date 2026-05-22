@@ -132,6 +132,13 @@ WScript.Quit 16
         throw 'Unexpected direct VBS argv[0] support; launch scripts through wscript.exe or cscript.exe explicitly.'
     }
 
+    $Case = New-SmokeCase 'malformed_exe_arg0' '{"cwd":"@{exe_dir}","command":["@{exe_dir}\\bad.exe"]}'
+    Write-Utf8NoBom (Join-Path $Case.Dir 'bad.exe') 'MZ'
+    $Result = Invoke-SmokeCase 'malformed_exe_arg0' $Case.Exe
+    if ($Result.ExitCode -eq 0 -or $Result.ExitCode -eq -1073741819) {
+        throw "Malformed command[0] exited $($Result.ExitCode); expected a normal launch failure, not success or access violation."
+    }
+
     Write-Host "Windows smoke tests passed in $Root"
 } finally {
     if ($env:EXEWRAP_KEEP_SMOKE_DIR -ne '1') {
