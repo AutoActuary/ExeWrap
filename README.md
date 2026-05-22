@@ -27,12 +27,16 @@ Published GitHub releases provide builds for:
 Each release build contains:
 
 ```text
-ExeWrap.exe
+ExeWrap-console.exe
+ExeWrap-windowed.exe
 ExeWrap-stamper.exe
 ```
 
-Use `ExeWrap.exe` as the generic base launcher. Use
-`ExeWrap-stamper.exe` to make your app-specific executable.
+Use `ExeWrap-console.exe` for PATH commands, CI tools, and scripts where the
+parent shell should wait and receive the child exit code. Use
+`ExeWrap-windowed.exe` for Explorer shortcuts, file associations, protocol
+handlers, and background GUI launches that should not present a console window.
+Use `ExeWrap-stamper.exe` to make your app-specific executable.
 
 ## Stamp A Launcher
 
@@ -40,23 +44,29 @@ Create a config file, then stamp it onto the base executable:
 
 ```powershell
 ExeWrap-stamper.exe `
-  --launcher ExeWrap.exe `
+  --launcher ExeWrap-console.exe `
   --config my-tool.config.json `
   --icon logo.ico `
+  --subsystem console `
   bundle\bin\my-tool.exe
 ```
 
 Arguments are:
 
 ```text
-ExeWrap-stamper.exe --launcher <ExeWrap.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
+ExeWrap-stamper.exe --launcher <base-launcher.exe> --config <config.json> [--icon <logo.ico>] [--subsystem inherit|console|windowed|gui] <output.exe>
 ```
 
 `--icon` is optional. When present, the stamp helper writes the icon into the
 output executable before appending the config overlay.
 
-You can stamp either the base `ExeWrap.exe` or an already stamped executable.
-When restamping, the stamper replaces the existing embedded config instead of
+`--subsystem` is optional and defaults to `inherit`, which preserves the
+subsystem of the `--launcher` input. Use `console` for command-line shims and
+`windowed` for GUI/background launchers. `gui` is accepted as an alias for
+`windowed`.
+
+You can stamp either a base launcher or an already stamped executable. When
+restamping, the stamper replaces the existing embedded config instead of
 appending another copy.
 
 Run the stamped output:
@@ -81,7 +91,6 @@ code pages, and other non-utf-8 byte sequences are rejected.
 
 ```json
 {
-  "cwd": "@{exe_dir}",
   "command": ["cmd.exe", "/C", "echo hello && pause"]
 }
 ```
@@ -91,40 +100,28 @@ code pages, and other non-utf-8 byte sequences are rejected.
 | Field | Required | Type | Behavior |
 | --- | --- | --- | --- |
 | `command` | Yes | array of strings/splices | Child argv. Each entry is one argument. |
-| `cwd` | No | string | Child working directory. Defaults to `@{exe_dir}`. |
+| `cwd` | No | string | Child working directory. Defaults to `@{cwd}`, the directory where the launcher was started. |
 | `env` | No | ordered object | Environment edits applied before starting the child. Later values can read earlier edits. |
-| `terminal` | No | `true`, `false`, or `"auto"` | Controls console visibility and stdio handling. |
 | `kill_children_on_exit` | No | boolean | Kills the child process tree if the launcher exits or is killed. |
 | `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. Otherwise missing env values resolve to an empty string. |
 | `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args:N}` lookups fail. Otherwise missing args resolve to an empty string. |
 
-If `terminal` is omitted, it defaults to `"auto"`:
-
-- `true` lets the child inherit stdio and use a visible console.
-- `false` starts the child with no window and ignored stdio.
-- `"auto"` inspects the resolved executable at `command[0]`. A Windows console
-  subsystem executable behaves like `true`; a Windows GUI subsystem executable
-  behaves like `false`. If inspection fails or the subsystem is ambiguous,
-  ExeWrap falls back to `true`.
-
-`"auto"` is useful, but it is not magic. It can only inspect `command[0]`.
-Bare commands such as `python.exe` are resolved through the child environment's
-`PATH`; extensionless commands such as `python` also use `PATHEXT`. The lookup
-checks the final child `cwd` first, then each `PATH` directory, using `PATHEXT`
-order for extensionless names. When ExeWrap finds the executable, it replaces
-`command[0]` with that concrete path before spawning, and `"auto"` inspects the
-same file. Launchers, script hosts, and programs that decide at execution time
-whether to act like a console or GUI app may need an explicit `true` or `false`.
-`PATHEXT` lookup is limited to extensions Windows can spawn directly here:
-`.COM`, `.EXE`, `.BAT`, and `.CMD`. Run `.vbs` scripts through `wscript.exe` or
-`cscript.exe` explicitly when you want Windows Script Host behavior.
-
-When present, `terminal` must evaluate to exactly JSON `true`, JSON `false`, or
-the string `"auto"`. Other strings and other JSON types are rejected.
-
 The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
-object keys. `command` is required and must be the final top-level key, so all
-setup fields are resolved before the child argv is built.
+object keys. ExeWrap config is order-aware templated JSON-like input, not
+arbitrary JSON where object order is irrelevant. `command` is required and must
+be the final top-level key, because all setup fields are resolved before the
+child argv is built. `env` object insertion order is also part of the contract:
+later environment values can read earlier edits.
+
+If a portable app should run relative to the stamped executable instead of the
+caller's directory, set `cwd` explicitly:
+
+```json
+{
+  "cwd": "@{exe_dir}",
+  "command": ["@{exe_dir}\\app.exe"]
+}
+```
 
 ## Command Arrays
 
@@ -150,7 +147,6 @@ Use `cmd.exe /C` only when you need shell features:
 
 ```json
 {
-  "terminal": true,
   "command": [
     "cmd.exe",
     "/C",
@@ -163,7 +159,6 @@ Use PowerShell explicitly when you need PowerShell syntax:
 
 ```json
 {
-  "terminal": true,
   "command": [
     "powershell.exe",
     "-NoProfile",
@@ -416,7 +411,6 @@ Config for `bundle\bin\my-tool.exe`:
 
 ```json
 {
-  "terminal": true,
   "cwd": "@{exe_parent:join("app")}",
   "env": {
     "PYTHONHOME": "@{exe_parent:join("python")}",
@@ -437,7 +431,6 @@ Config for `bundle\bin\my-tool.exe`:
 
 ```json
 {
-  "terminal": true,
   "cwd": "@{exe_dir}",
   "command": ["cmd.exe", "/C", "@{exe_dir}\\run.cmd"]
 }
@@ -445,9 +438,12 @@ Config for `bundle\bin\my-tool.exe`:
 
 ### Run A Background Worker
 
+Stamp background workers with `ExeWrap-windowed.exe` or
+`ExeWrap-stamper.exe --subsystem windowed` when they should not present a
+console window.
+
 ```json
 {
-  "terminal": false,
   "kill_children_on_exit": true,
   "cwd": "@{exe_parent:join("app")}",
   "command": [
@@ -465,7 +461,6 @@ killed, Windows closes the job handle and terminates the child process tree.
 
 ```json
 {
-  "terminal": true,
   "env": {
     "LOG_FILE": "@{temp_dir:join(exe_filename_noext:suffix(".log"))}"
   },
@@ -478,19 +473,23 @@ killed, Windows closes the job handle and terminates the child process tree.
 `ExeWrap-stamper.exe` is not required by the file format. Other tools can
 produce the same output by doing the same byte-level steps:
 
-1. Copy `ExeWrap.exe` to the desired output path.
+1. Copy `ExeWrap-console.exe`, `ExeWrap-windowed.exe`, or another stamped
+   launcher to the desired output path.
 2. Optionally update the copied executable's Windows resources, such as its icon.
-3. Append the ASCII start marker
+3. Optionally patch the Windows PE optional-header subsystem field to console
+   value `3` or windowed value `2`.
+4. Append the ASCII start marker
    `8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a`.
-4. Append the utf-8 templated JSON config bytes.
-5. If unrelated bytes must be appended after the config, append the ASCII end
+5. Append the utf-8 templated JSON config bytes.
+6. If unrelated bytes must be appended after the config, append the ASCII end
    marker `ce3beca3-7ed2-40a4-9133-f82198be1d7b` after the config first.
 
 When the config is the final thing in the file, the end marker is not needed.
 
-The launcher searches from the end of its own file for the last start marker.
-Config bytes run from after that marker to the following end marker, or to the
-end of the file when no end marker is present.
+For PE launchers, the runtime searches the PE overlay for the last start marker
+so marker-like bytes inside the executable image are ignored. Config bytes run
+from after that marker to the following end marker, or to the end of the file
+when no end marker is present.
 
 ## Build From Source
 
@@ -507,13 +506,13 @@ zig build
 The build writes:
 
 ```text
-zig-out\bin\ExeWrap.exe
+zig-out\bin\ExeWrap-console.exe
+zig-out\bin\ExeWrap-windowed.exe
 zig-out\bin\ExeWrap-stamper.exe
 ```
 
 The default build is size-oriented: `ReleaseSmall`, stripped, single-threaded,
-and built with the Windows GUI subsystem so the launcher itself does not flash a
-console window.
+and emits both console-subsystem and windowed-subsystem launcher bases.
 
 Use a debug build when diagnosing launcher behavior:
 
@@ -523,10 +522,17 @@ zig build -Doptimize=Debug
 
 ## Troubleshooting
 
-### The launcher reports `NoEmbeddedConfig`
+### The launcher reports that no embedded config was found
 
-You are probably running the base `ExeWrap.exe` instead of a stamped
-output file. Re-run `ExeWrap-stamper.exe` and launch the output path.
+You are probably running `ExeWrap-console.exe` or `ExeWrap-windowed.exe` instead
+of a stamped output file. Re-run `ExeWrap-stamper.exe` and launch the output
+path.
+
+### The launcher reports that `terminal` was removed
+
+Choose the launcher subsystem at stamp time instead. Use `ExeWrap-console.exe`
+or `--subsystem console` for CLI shims, and `ExeWrap-windowed.exe` or
+`--subsystem windowed` for GUI/background launchers.
 
 ### Stamping fails with `ConfigMustBeUtf8`
 

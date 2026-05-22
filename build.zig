@@ -17,8 +17,8 @@ pub fn build(b: *std.Build) void {
         .omit_frame_pointer = true,
     });
 
-    const launcher = b.addExecutable(.{
-        .name = "ExeWrap",
+    const launcher_console = b.addExecutable(.{
+        .name = "ExeWrap-console",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -31,8 +31,25 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    launcher.subsystem = .Windows;
-    b.installArtifact(launcher);
+    launcher_console.subsystem = .Console;
+    b.installArtifact(launcher_console);
+
+    const launcher_windowed = b.addExecutable(.{
+        .name = "ExeWrap-windowed",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = true,
+            .single_threaded = true,
+            .omit_frame_pointer = true,
+            .imports = &.{
+                .{ .name = "exewrap", .module = mod },
+            },
+        }),
+    });
+    launcher_windowed.subsystem = .Windows;
+    b.installArtifact(launcher_windowed);
 
     const stamp = b.addExecutable(.{
         .name = "ExeWrap-stamper",
@@ -55,6 +72,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_tests = b.addRunArtifact(tests);
 
+    const stamp_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/stamp.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "exewrap", .module = mod },
+            },
+        }),
+    });
+    const run_stamp_tests = b.addRunArtifact(stamp_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_stamp_tests.step);
 }

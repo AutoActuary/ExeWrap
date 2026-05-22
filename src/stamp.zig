@@ -13,7 +13,14 @@ const StampOptions = struct {
     launcher_path: []const u8,
     config_path: []const u8,
     icon_path: ?[]const u8,
+    subsystem: StampSubsystem,
     output_path: []const u8,
+};
+
+const StampSubsystem = enum {
+    inherit,
+    console,
+    windowed,
 };
 
 const IconImage = struct {
@@ -28,7 +35,11 @@ const IconImage = struct {
     id: u16,
 };
 
-pub fn main() !void {
+pub fn main() void {
+    run() catch std.process.exit(1);
+}
+
+fn run() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -53,6 +64,8 @@ pub fn main() !void {
     if (options.icon_path) |icon_path| {
         try stampIcon(allocator, options.output_path, icon_path);
     }
+
+    try applySubsystemOverride(options);
 
     {
         const output = try std.fs.cwd().openFile(options.output_path, .{ .mode = .write_only });
@@ -81,10 +94,11 @@ fn writeConfigOverlay(output: std.fs.File, base: []const u8, config: []const u8,
     }
 }
 
-fn parseArgs(args: []const [:0]u8) !StampOptions {
+fn parseArgs(args: []const [:0]const u8) !StampOptions {
     var launcher_path: ?[]const u8 = null;
     var config_path: ?[]const u8 = null;
     var icon_path: ?[]const u8 = null;
+    var subsystem: StampSubsystem = .inherit;
     var output_path: ?[]const u8 = null;
 
     var i: usize = 1;
@@ -105,6 +119,10 @@ fn parseArgs(args: []const [:0]u8) !StampOptions {
             i += 1;
             if (i >= args.len) return error.MissingIconPath;
             icon_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--subsystem")) {
+            i += 1;
+            if (i >= args.len) return error.MissingSubsystem;
+            subsystem = try parseSubsystem(args[i]);
         } else if (std.mem.startsWith(u8, arg, "--")) {
             return error.UnknownOption;
         } else if (output_path == null) {
@@ -118,16 +136,49 @@ fn parseArgs(args: []const [:0]u8) !StampOptions {
         .launcher_path = launcher_path orelse return error.MissingLauncherPath,
         .config_path = config_path orelse return error.MissingConfigPath,
         .icon_path = icon_path,
+        .subsystem = subsystem,
         .output_path = output_path orelse return error.MissingOutputPath,
     };
+}
+
+fn parseSubsystem(value: []const u8) !StampSubsystem {
+    if (std.mem.eql(u8, value, "inherit")) return .inherit;
+    if (std.mem.eql(u8, value, "console")) return .console;
+    if (std.mem.eql(u8, value, "windowed") or std.mem.eql(u8, value, "gui")) return .windowed;
+    return error.InvalidSubsystem;
 }
 
 fn writeUsage() !void {
     const stderr = std.fs.File.stderr();
     try stderr.writeAll(
-        \\usage: ExeWrap-stamper.exe --launcher <ExeWrap.exe> --config <config.json> [--icon <logo.ico>] <output.exe>
+        \\usage: ExeWrap-stamper.exe --launcher <base-launcher.exe> --config <config.json> [--icon <logo.ico>] [--subsystem inherit|console|windowed|gui] <output.exe>
         \\
     );
+}
+
+fn applySubsystemOverride(options: StampOptions) !void {
+    const subsystem: launcher.WindowsSubsystem = switch (options.subsystem) {
+        .inherit => return,
+        .console => .windows_console,
+        .windowed => .windows_gui,
+    };
+    launcher.setWindowsSubsystem(options.output_path, subsystem) catch |err| {
+        reportSubsystemPatchError(options.output_path, err);
+        return err;
+    };
+}
+
+fn reportSubsystemPatchError(output_path: []const u8, err: anyerror) void {
+    switch (err) {
+        error.InvalidPeFile => std.debug.print(
+            "ExeWrap-stamper error: cannot set subsystem on malformed PE file: {s}\n",
+            .{output_path},
+        ),
+        else => std.debug.print(
+            "ExeWrap-stamper error: cannot set subsystem on {s}: {s}\n",
+            .{ output_path, @errorName(err) },
+        ),
+    }
 }
 
 fn stampIcon(allocator: std.mem.Allocator, output_path: []const u8, icon_path: []const u8) !void {
@@ -253,3 +304,43 @@ extern "kernel32" fn EndUpdateResourceW(
     hUpdate: std.os.windows.HANDLE,
     fDiscard: std.os.windows.BOOL,
 ) callconv(.winapi) std.os.windows.BOOL;
+
+test "stamper arg parsing accepts subsystem values" {
+    const args = [_][:0]const u8{
+        "ExeWrap-stamper.exe",
+        "--launcher",
+        "ExeWrap-console.exe",
+        "--config",
+        "config.json",
+        "--subsystem",
+        "gui",
+        "out.exe",
+    };
+    const options = try parseArgs(&args);
+
+    try std.testing.expectEqualStrings("ExeWrap-console.exe", options.launcher_path);
+    try std.testing.expectEqualStrings("config.json", options.config_path);
+    try std.testing.expect(options.icon_path == null);
+    try std.testing.expectEqual(StampSubsystem.windowed, options.subsystem);
+    try std.testing.expectEqualStrings("out.exe", options.output_path);
+
+    try std.testing.expectEqual(StampSubsystem.inherit, try parseSubsystem("inherit"));
+    try std.testing.expectEqual(StampSubsystem.console, try parseSubsystem("console"));
+    try std.testing.expectEqual(StampSubsystem.windowed, try parseSubsystem("windowed"));
+    try std.testing.expectEqual(StampSubsystem.windowed, try parseSubsystem("gui"));
+    try std.testing.expectError(error.InvalidSubsystem, parseSubsystem("hidden"));
+}
+
+test "stamper subsystem defaults to inherit" {
+    const args = [_][:0]const u8{
+        "ExeWrap-stamper.exe",
+        "--launcher",
+        "ExeWrap-windowed.exe",
+        "--config",
+        "config.json",
+        "out.exe",
+    };
+    const options = try parseArgs(&args);
+
+    try std.testing.expectEqual(StampSubsystem.inherit, options.subsystem);
+}

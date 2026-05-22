@@ -54,8 +54,9 @@ EOF. Other stampers can write the end marker when they need to append unrelated
 data after the config.
 
 The stamp helper applies optional Windows resources, such as icons, before it
-appends the overlay. Resource updates can rewrite the PE file, so the overlay is
-always the final write.
+patches a requested PE subsystem override and appends the overlay. Resource
+updates can rewrite the PE file, so subsystem patching happens after resource
+updates. The overlay is always the final write.
 
 ## Why Templated JSON Instead Of A Script
 
@@ -213,32 +214,31 @@ version of the language small.
 
 ## Windows Process Choices
 
-The main launcher executable is built with the Windows GUI subsystem. That avoids
-an unavoidable console flash from the launcher itself.
+Windows decides whether a parent shell waits for a process from the launched
+executable's PE subsystem before ExeWrap can read its embedded config. That
+means console-vs-windowed launcher behavior must be a build/stamp-time choice,
+not a runtime JSON field.
 
-Child visibility is controlled at child-process creation time:
+The build emits two base launchers from the same `src/main.zig` source:
 
-- `terminal: true` lets the child inherit stdio and use a visible console when
-  the child program creates or attaches to one.
-- `terminal: false` sets `CREATE_NO_WINDOW` and ignores stdin/stdout/stderr.
-- `terminal: "auto"` is the default. The launcher inspects the resolved
-  executable at `command[0]` and reads its Windows PE subsystem. Console
-  subsystem maps to `terminal: true`; GUI subsystem maps to `terminal: false`;
-  unknown, unsupported, or unreadable executables fall back to `terminal: true`.
-  Bare command names are resolved against the final child `cwd`, `PATH`, and
-  `PATHEXT` before inspection. The same resolved path replaces `command[0]`
-  before spawning, so auto inspection and process creation use one executable
-  decision instead of two separate lookups.
-  `PATHEXT` probing intentionally accepts only `.COM`, `.EXE`, `.BAT`, and
-  `.CMD`. Windows Script Host files such as `.vbs` should be launched through
-  `wscript.exe` or `cscript.exe`, because they are not accepted as direct child
-  process executables by Zig's spawn path.
+- `ExeWrap-console.exe` uses the Windows CUI subsystem. It is suitable for PATH
+  command shims, CI, scripts, and tools where parent shells should wait and
+  receive the child exit code.
+- `ExeWrap-windowed.exe` uses the Windows GUI subsystem. It is suitable for
+  Explorer shortcuts, protocol handlers, file associations, and background GUI
+  launchers.
 
-The auto mode is intentionally best-effort. The PE subsystem describes how the
-inspected executable is linked, not what the launched program will decide at
-runtime. Script hosts, forwarding launchers, and apps that choose console/GUI
-behavior during execution should use explicit `terminal: true` or
-`terminal: false` when the default guess is wrong.
+The stamper can preserve the input launcher's subsystem or patch the stamped
+output to console or windowed with `--subsystem console|windowed`. The patcher
+validates PE32 and PE32+ headers and writes only the optional-header
+`Subsystem` field.
+
+The runtime config schema deliberately does not support `terminal`. Child
+stdio/window policy follows the stamped launcher's subsystem:
+
+- Console launchers inherit stdin/stdout/stderr and do not set
+  `CREATE_NO_WINDOW`.
+- Windowed launchers ignore stdin/stdout/stderr and set `CREATE_NO_WINDOW`.
 
 `kill_children_on_exit` uses a Windows Job Object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The child is spawned suspended, assigned to
@@ -267,10 +267,9 @@ The implementation intentionally keeps several items small or explicit:
 - Object-order environment evaluation depends on the current Zig JSON object
   representation preserving iteration order. If the parser representation
   changes, ordered `env` object evaluation must remain deliberate and tested.
-- Boolean options other than `terminal` are read only when the JSON value is a
-  boolean. Non-boolean values are treated as absent by the current helper rather
-  than producing a dedicated type error. `terminal` is stricter because it
-  accepts a typed union: `true`, `false`, or `"auto"` only.
+- Boolean options are read only when the JSON value is a boolean. Non-boolean
+  values are treated as absent by the current helper rather than producing a
+  dedicated type error.
 - The launcher is Windows-focused. Some path transforms handle drive and UNC
   roots, while cross-platform semantics should be reviewed before promising
   Linux or macOS behavior.

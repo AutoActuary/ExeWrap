@@ -1,149 +1,114 @@
-param(
-    [string] $Launcher = (Join-Path $PSScriptRoot '..\zig-out\bin\ExeWrap.exe'),
-    [string] $Stamper = (Join-Path $PSScriptRoot '..\zig-out\bin\ExeWrap-stamper.exe')
-)
-
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
-if (-not [Environment]::Is64BitOperatingSystem) {
-    Write-Host 'Skipping Windows smoke tests on non-64-bit Windows.'
-    exit 0
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$bin = Join-Path $repoRoot "zig-out\bin"
+$consoleLauncher = Join-Path $bin "ExeWrap-console.exe"
+$windowedLauncher = Join-Path $bin "ExeWrap-windowed.exe"
+$stamper = Join-Path $bin "ExeWrap-stamper.exe"
+
+function Assert-Equal($Expected, $Actual, $Message) {
+  if ($Expected -ne $Actual) {
+    throw "$Message Expected '$Expected', got '$Actual'."
+  }
 }
 
-$Launcher = (Resolve-Path $Launcher).Path
-$Stamper = (Resolve-Path $Stamper).Path
-$Root = Join-Path ([System.IO.Path]::GetTempPath()) ('exewrap-smoke-' + [System.Guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $Root | Out-Null
-
-function Write-Utf8NoBom([string] $Path, [string] $Text) {
-    $Utf8 = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllText($Path, $Text, $Utf8)
+function Write-Utf8NoBom($Path, $Text) {
+  [System.IO.File]::WriteAllText($Path, $Text, [System.Text.UTF8Encoding]::new($false))
 }
 
-function New-SmokeCase([string] $Name, [string] $ConfigText) {
-    $Dir = Join-Path $Root $Name
-    New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-    $Config = Join-Path $Dir 'config.json'
-    Write-Utf8NoBom $Config $ConfigText
-    $Output = Join-Path $Dir "$Name.exe"
-    & $Stamper --launcher $Launcher --config $Config $Output
-    if ($LASTEXITCODE -ne 0) {
-        throw "Stamper failed for $Name with exit code $LASTEXITCODE."
-    }
-    return @{ Dir = $Dir; Exe = $Output }
+function Get-PeSubsystem($Path) {
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+    throw "Not a PE file: $Path"
+  }
+  $peOffset = [System.BitConverter]::ToUInt32($bytes, 0x3c)
+  if ($peOffset + 24 -gt $bytes.Length) {
+    throw "Invalid PE header: $Path"
+  }
+  if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
+    throw "Invalid PE signature: $Path"
+  }
+  $optionalHeaderOffset = $peOffset + 24
+  $subsystemOffset = $optionalHeaderOffset + 68
+  if ($subsystemOffset + 2 -gt $bytes.Length) {
+    throw "Missing PE subsystem field: $Path"
+  }
+  [System.BitConverter]::ToUInt16($bytes, $subsystemOffset)
 }
 
-function Invoke-SmokeCase([string] $Name, [string] $Exe) {
-    $Dir = Split-Path -Parent $Exe
-    $Stdout = Join-Path $Dir 'stdout.txt'
-    $Stderr = Join-Path $Dir 'stderr.txt'
-    $Process = Start-Process -FilePath $Exe -WorkingDirectory $Dir -Wait -PassThru -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr
-    return @{
-        Name = $Name
-        Dir = $Dir
-        ExitCode = $Process.ExitCode
-        Stdout = if (Test-Path $Stdout) { [System.IO.File]::ReadAllText($Stdout).Trim() } else { '' }
-        Stderr = if (Test-Path $Stderr) { [System.IO.File]::ReadAllText($Stderr).Trim() } else { '' }
-    }
+foreach ($path in @($consoleLauncher, $windowedLauncher, $stamper)) {
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw "Missing built executable: $path"
+  }
 }
 
-function Assert-ExitCode($Result, [int] $Expected) {
-    if ($Result.ExitCode -ne $Expected) {
-        throw "$($Result.Name) exited $($Result.ExitCode), expected $Expected. Stdout: $($Result.Stdout) Stderr: $($Result.Stderr)"
-    }
-}
+Assert-Equal 3 (Get-PeSubsystem $consoleLauncher) "Base console launcher subsystem mismatch."
+Assert-Equal 2 (Get-PeSubsystem $windowedLauncher) "Base windowed launcher subsystem mismatch."
 
-function Assert-Marker([string] $Dir, [string] $Name, [string] $Expected) {
-    $Path = Join-Path $Dir $Name
-    if (-not (Test-Path $Path)) {
-        throw "Expected marker file missing: $Path"
-    }
-    $Actual = [System.IO.File]::ReadAllText($Path).Trim()
-    if ($Actual -ne $Expected) {
-        throw "Marker $Name was '$Actual', expected '$Expected'."
-    }
-}
-
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("exewrap-smoke-" + [System.Guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 try {
-    $CmdDirect = @'
-@echo off
-echo cmd-direct-ok>"%~dp0cmd.out"
-exit /b 7
-'@
-    $BatDirect = @'
-@echo off
-echo bat-direct-ok>"%~dp0bat.out"
-exit /b 8
-'@
-    $CmdPathext = @'
-@echo off
-echo cmd-pathext-ok>"%~dp0cmd_pathext.out"
-exit /b 15
-'@
-    $GuiVbs = @'
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set f = fso.CreateTextFile(fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "gui.out"), True)
-f.WriteLine "gui-wscript-ok"
-f.Close
-WScript.Quit 14
-'@
-    $DirectVbs = @'
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set f = fso.CreateTextFile(fso.BuildPath(fso.GetParentFolderName(WScript.ScriptFullName), "vbs_direct.out"), True)
-f.WriteLine "vbs-direct-ok"
-f.Close
-WScript.Quit 16
-'@
+  $okConfig = Join-Path $tmp "ok.config.json"
+  Write-Utf8NoBom $okConfig '{"command":["cmd.exe","/C","exit /b 0"]}'
 
-    $Case = New-SmokeCase 'cmd_direct' '{"cwd":"@{exe_dir}","command":["@{exe_dir}\\probe.cmd"]}'
-    Write-Utf8NoBom (Join-Path $Case.Dir 'probe.cmd') $CmdDirect
-    $Result = Invoke-SmokeCase 'cmd_direct' $Case.Exe
-    Assert-ExitCode $Result 7
-    Assert-Marker $Case.Dir 'cmd.out' 'cmd-direct-ok'
+  $inheritConsole = Join-Path $tmp "inherit-console.exe"
+  & $stamper --launcher $consoleLauncher --config $okConfig $inheritConsole
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for inherited console launcher." }
+  Assert-Equal 3 (Get-PeSubsystem $inheritConsole) "Inherited console subsystem mismatch."
 
-    $Case = New-SmokeCase 'bat_direct' '{"cwd":"@{exe_dir}","command":["@{exe_dir}\\probe.bat"]}'
-    Write-Utf8NoBom (Join-Path $Case.Dir 'probe.bat') $BatDirect
-    $Result = Invoke-SmokeCase 'bat_direct' $Case.Exe
-    Assert-ExitCode $Result 8
-    Assert-Marker $Case.Dir 'bat.out' 'bat-direct-ok'
+  $inheritWindowed = Join-Path $tmp "inherit-windowed.exe"
+  & $stamper --launcher $windowedLauncher --config $okConfig $inheritWindowed
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for inherited windowed launcher." }
+  Assert-Equal 2 (Get-PeSubsystem $inheritWindowed) "Inherited windowed subsystem mismatch."
 
-    $Case = New-SmokeCase 'cmd_pathext' '{"cwd":"@{exe_dir}","command":["probe_cmd"]}'
-    Write-Utf8NoBom (Join-Path $Case.Dir 'probe_cmd.cmd') $CmdPathext
-    $Result = Invoke-SmokeCase 'cmd_pathext' $Case.Exe
-    Assert-ExitCode $Result 15
-    Assert-Marker $Case.Dir 'cmd_pathext.out' 'cmd-pathext-ok'
+  $overrideConsole = Join-Path $tmp "override-console.exe"
+  & $stamper --launcher $windowedLauncher --config $okConfig --subsystem console $overrideConsole
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for windowed-to-console override." }
+  Assert-Equal 3 (Get-PeSubsystem $overrideConsole) "Windowed-to-console override subsystem mismatch."
 
-    $Case = New-SmokeCase 'console_cmd' '{"cwd":"@{exe_dir}","command":["C:\\Windows\\System32\\cmd.exe","/C","echo console-cmd-ok>console_cmd.out & exit /b 9"]}'
-    $Result = Invoke-SmokeCase 'console_cmd' $Case.Exe
-    Assert-ExitCode $Result 9
-    Assert-Marker $Case.Dir 'console_cmd.out' 'console-cmd-ok'
+  $overrideWindowed = Join-Path $tmp "override-windowed.exe"
+  & $stamper --launcher $consoleLauncher --config $okConfig --subsystem windowed $overrideWindowed
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for console-to-windowed override." }
+  Assert-Equal 2 (Get-PeSubsystem $overrideWindowed) "Console-to-windowed override subsystem mismatch."
 
-    $Case = New-SmokeCase 'gui_wscript' '{"cwd":"@{exe_dir}","command":["C:\\Windows\\System32\\wscript.exe","//B","//Nologo","@{exe_dir}\\gui.vbs"]}'
-    Write-Utf8NoBom (Join-Path $Case.Dir 'gui.vbs') $GuiVbs
-    $Result = Invoke-SmokeCase 'gui_wscript' $Case.Exe
-    Assert-ExitCode $Result 14
-    Assert-Marker $Case.Dir 'gui.out' 'gui-wscript-ok'
+  $waitConfig = Join-Path $tmp "wait.config.json"
+  Write-Utf8NoBom $waitConfig '{"command":["powershell.exe","-NoProfile","-Command","Start-Sleep -Seconds 1; exit 37"]}'
+  $waitExe = Join-Path $tmp "wait-console.exe"
+  & $stamper --launcher $consoleLauncher --config $waitConfig $waitExe
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for wait test." }
+  & $waitExe
+  Assert-Equal 37 $LASTEXITCODE "Console launcher did not propagate child exit code."
 
-    $Case = New-SmokeCase 'vbs_direct_arg0' '{"cwd":"@{exe_dir}","command":["@{exe_dir}\\direct.vbs"]}'
-    Write-Utf8NoBom (Join-Path $Case.Dir 'direct.vbs') $DirectVbs
-    $Result = Invoke-SmokeCase 'vbs_direct_arg0' $Case.Exe
-    if ($Result.ExitCode -eq 16 -or (Test-Path (Join-Path $Case.Dir 'vbs_direct.out'))) {
-        throw 'Unexpected direct VBS argv[0] support; launch scripts through wscript.exe or cscript.exe explicitly.'
-    }
+  $cwdConfig = Join-Path $tmp "cwd.config.json"
+  Write-Utf8NoBom $cwdConfig '{"command":["powershell.exe","-NoProfile","-Command","[System.IO.File]::WriteAllText(''cwd.txt'', (Get-Location).Path); exit 0"]}'
+  $cwdExe = Join-Path $tmp "cwd-console.exe"
+  & $stamper --launcher $consoleLauncher --config $cwdConfig $cwdExe
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for cwd test." }
+  $workDir = Join-Path $tmp "work"
+  New-Item -ItemType Directory -Force -Path $workDir | Out-Null
+  Push-Location $workDir
+  try {
+    & $cwdExe
+    if ($LASTEXITCODE -ne 0) { throw "Cwd smoke executable failed." }
+  } finally {
+    Pop-Location
+  }
+  Assert-Equal $workDir ([System.IO.File]::ReadAllText((Join-Path $workDir "cwd.txt"))) "Omitted cwd did not inherit launch cwd."
 
-    $Case = New-SmokeCase 'malformed_exe_arg0' '{"cwd":"@{exe_dir}","command":["@{exe_dir}\\bad.exe"]}'
-    Write-Utf8NoBom (Join-Path $Case.Dir 'bad.exe') 'MZ'
-    $Result = Invoke-SmokeCase 'malformed_exe_arg0' $Case.Exe
-    if ($Result.ExitCode -eq 0 -or $Result.ExitCode -eq -1073741819) {
-        throw "Malformed command[0] exited $($Result.ExitCode); expected a normal launch failure, not success or access violation."
-    }
-
-    Write-Host "Windows smoke tests passed in $Root"
+  $terminalConfig = Join-Path $tmp "terminal.config.json"
+  Write-Utf8NoBom $terminalConfig '{"terminal":true,"command":["cmd.exe","/C","exit /b 0"]}'
+  $terminalExe = Join-Path $tmp "terminal-removed.exe"
+  & $stamper --launcher $consoleLauncher --config $terminalConfig $terminalExe
+  if ($LASTEXITCODE -ne 0) { throw "Stamper should allow syntactically valid config bytes before runtime parsing." }
+  $terminalStdout = Join-Path $tmp "terminal.stdout.txt"
+  $terminalStderr = Join-Path $tmp "terminal.stderr.txt"
+  $terminalProcess = Start-Process -FilePath $terminalExe -NoNewWindow -Wait -PassThru -RedirectStandardOutput $terminalStdout -RedirectStandardError $terminalStderr
+  $terminalOutput = ((Get-Content -Raw -ErrorAction SilentlyContinue $terminalStdout) + (Get-Content -Raw -ErrorAction SilentlyContinue $terminalStderr))
+  if ($terminalProcess.ExitCode -eq 0) { throw "Config containing terminal unexpectedly succeeded." }
+  if ($terminalOutput -notmatch 'terminal.*removed') {
+    throw "Removed terminal migration message was not reported. Output: $terminalOutput"
+  }
 } finally {
-    if ($env:EXEWRAP_KEEP_SMOKE_DIR -ne '1') {
-        Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
-    } else {
-        Write-Host "Kept smoke directory: $Root"
-    }
+  Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }

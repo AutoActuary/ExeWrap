@@ -1,16 +1,15 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 pub const template_scan = @import("template_scan.zig");
 pub const template_expr = @import("template_expr.zig");
-pub const command_resolve = @import("command_resolve.zig");
 
 pub const marker_uuid = "8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a";
 pub const end_marker_uuid = "ce3beca3-7ed2-40a4-9133-f82198be1d7b";
 pub const config_start_marker = marker_uuid;
 pub const config_end_marker = end_marker_uuid;
 pub const max_exe_bytes = 512 * 1024 * 1024;
-pub const max_pe_probe_bytes: usize = 4 * 1024 * 1024;
+pub const pe_subsystem_console: u16 = 3;
+pub const pe_subsystem_windowed: u16 = 2;
 
 pub const RuntimePaths = struct {
     exe_path: []const u8,
@@ -74,14 +73,14 @@ pub const EnvVar = struct {
     value: []const u8,
 };
 
-pub const TerminalMode = enum {
-    visible,
-    hidden,
-    auto,
+pub const WindowsSubsystem = enum {
+    native,
+    windows_gui,
+    windows_console,
+    other,
 };
 
 pub const Config = struct {
-    terminal: TerminalMode,
     kill_children_on_exit: bool,
     cwd: []const u8,
     command: []const []const u8,
@@ -132,12 +131,12 @@ fn peOverlayStartOffset(bytes: []const u8) ?usize {
     if (bytes.len < dos_lfanew_offset + @sizeOf(u32)) return null;
     if (!std.mem.eql(u8, bytes[0..2], "MZ")) return null;
 
-    const pe_offset: usize = @intCast(readLittleInt(u32, bytes, dos_lfanew_offset));
+    const pe_offset: usize = @intCast(readInt(u32, bytes, dos_lfanew_offset));
     if (pe_offset > bytes.len or bytes.len - pe_offset < 24) return null;
     if (!std.mem.eql(u8, bytes[pe_offset..][0..4], "PE\x00\x00")) return null;
 
-    const section_count: usize = readLittleInt(u16, bytes, pe_offset + 6);
-    const optional_header_size: usize = readLittleInt(u16, bytes, pe_offset + 20);
+    const section_count: usize = readInt(u16, bytes, pe_offset + 6);
+    const optional_header_size: usize = readInt(u16, bytes, pe_offset + 20);
     const optional_header_offset = pe_offset + 24;
     if (optional_header_offset > bytes.len or optional_header_size > bytes.len - optional_header_offset) return null;
 
@@ -149,33 +148,102 @@ fn peOverlayStartOffset(bytes: []const u8) ?usize {
     var overlay_start = section_table_offset + section_count * section_header_size;
     for (0..section_count) |index| {
         const section_offset = section_table_offset + index * section_header_size;
-        const raw_size: usize = @intCast(readLittleInt(u32, bytes, section_offset + 16));
-        const raw_pointer: usize = @intCast(readLittleInt(u32, bytes, section_offset + 20));
+        const raw_size: usize = @intCast(readInt(u32, bytes, section_offset + 16));
+        const raw_pointer: usize = @intCast(readInt(u32, bytes, section_offset + 20));
         if (raw_size == 0) continue;
         if (raw_pointer > bytes.len or raw_size > bytes.len - raw_pointer) return null;
         overlay_start = @max(overlay_start, raw_pointer + raw_size);
     }
 
-    if (optional_header_size >= @sizeOf(u16)) {
-        const data_directories_offset = switch (readLittleInt(u16, bytes, optional_header_offset)) {
-            0x10b => @as(usize, 96),
-            0x20b => @as(usize, 112),
-            else => return null,
-        };
-        const security_directory_offset = data_directories_offset + 4 * 8;
-        if (optional_header_size >= security_directory_offset + 8) {
-            const directory_offset = optional_header_offset + security_directory_offset;
-            const certificate_pointer: usize = @intCast(readLittleInt(u32, bytes, directory_offset));
-            const certificate_size: usize = @intCast(readLittleInt(u32, bytes, directory_offset + 4));
-            if (certificate_pointer != 0 and certificate_size != 0) {
-                if (certificate_pointer > bytes.len or certificate_size > bytes.len - certificate_pointer) return null;
-                overlay_start = @max(overlay_start, certificate_pointer + certificate_size);
-            }
+    const magic = readInt(u16, bytes, optional_header_offset);
+    const data_directories_offset: usize = switch (magic) {
+        0x10b => 96,
+        0x20b => 112,
+        else => return null,
+    };
+    const security_directory_offset = data_directories_offset + 4 * 8;
+    if (optional_header_size >= security_directory_offset + 8) {
+        const directory_offset = optional_header_offset + security_directory_offset;
+        const certificate_pointer: usize = @intCast(readInt(u32, bytes, directory_offset));
+        const certificate_size: usize = @intCast(readInt(u32, bytes, directory_offset + 4));
+        if (certificate_pointer != 0 and certificate_size != 0) {
+            if (certificate_pointer > bytes.len or certificate_size > bytes.len - certificate_pointer) return null;
+            overlay_start = @max(overlay_start, certificate_pointer + certificate_size);
         }
     }
 
     if (overlay_start > bytes.len) return null;
     return overlay_start;
+}
+
+pub fn windowsSubsystemFromPeBytes(bytes: []const u8) !WindowsSubsystem {
+    const offset = try windowsSubsystemFieldOffsetFromPeBytes(bytes);
+    return switch (readInt(u16, bytes, offset)) {
+        1 => .native,
+        pe_subsystem_windowed => .windows_gui,
+        pe_subsystem_console => .windows_console,
+        else => .other,
+    };
+}
+
+pub fn setWindowsSubsystem(path: []const u8, subsystem: WindowsSubsystem) !void {
+    const file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
+    defer file.close();
+    try setWindowsSubsystemInFile(file, subsystem);
+}
+
+pub fn setWindowsSubsystemInFile(file: std.fs.File, subsystem: WindowsSubsystem) !void {
+    const allocator = std.heap.page_allocator;
+    try file.seekTo(0);
+    const bytes = try file.readToEndAlloc(allocator, max_exe_bytes);
+    defer allocator.free(bytes);
+
+    const offset = try windowsSubsystemFieldOffsetFromPeBytes(bytes);
+    try setWindowsSubsystemInBytes(bytes, subsystem);
+    try file.pwriteAll(bytes[offset..][0..@sizeOf(u16)], offset);
+}
+
+pub fn setWindowsSubsystemInBytes(bytes: []u8, subsystem: WindowsSubsystem) !void {
+    const offset = try windowsSubsystemFieldOffsetFromPeBytes(bytes);
+    const value = switch (subsystem) {
+        .windows_console => pe_subsystem_console,
+        .windows_gui => pe_subsystem_windowed,
+        else => return error.UnsupportedWindowsSubsystem,
+    };
+    std.mem.writeInt(u16, bytes[offset..][0..@sizeOf(u16)], value, .little);
+}
+
+pub fn childShouldInheritStdio(subsystem: WindowsSubsystem) bool {
+    return switch (subsystem) {
+        .windows_gui => false,
+        else => true,
+    };
+}
+
+fn windowsSubsystemFieldOffsetFromPeBytes(bytes: []const u8) !usize {
+    const dos_lfanew_offset = 0x3c;
+    if (bytes.len < dos_lfanew_offset + @sizeOf(u32)) return error.InvalidPeFile;
+    if (!std.mem.eql(u8, bytes[0..2], "MZ")) return error.InvalidPeFile;
+
+    const pe_offset: usize = @intCast(readInt(u32, bytes, dos_lfanew_offset));
+    if (pe_offset > bytes.len or bytes.len - pe_offset < 24) return error.InvalidPeFile;
+    if (!std.mem.eql(u8, bytes[pe_offset..][0..4], "PE\x00\x00")) return error.InvalidPeFile;
+
+    const optional_header_size: usize = readInt(u16, bytes, pe_offset + 20);
+    const optional_header_offset = pe_offset + 24;
+    if (optional_header_offset > bytes.len or optional_header_size > bytes.len - optional_header_offset) {
+        return error.InvalidPeFile;
+    }
+
+    const subsystem_offset_in_optional_header = 68;
+    if (optional_header_size < subsystem_offset_in_optional_header + @sizeOf(u16)) {
+        return error.InvalidPeFile;
+    }
+
+    const magic = readInt(u16, bytes, optional_header_offset);
+    if (magic != 0x10b and magic != 0x20b) return error.InvalidPeFile;
+
+    return optional_header_offset + subsystem_offset_in_optional_header;
 }
 
 pub fn validateConfigBytes(bytes: []const u8) !void {
@@ -228,7 +296,6 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
         .strictness = strictness,
     };
 
-    const terminal = try parseTerminalMode(allocator, root, &eval_ctx, scanned.sentinels);
     const kill_children_on_exit = getBool(root, "kill_children_on_exit") orelse false;
 
     const env = try parseEnv(allocator, root.get("env"), &eval_ctx, scanned.sentinels);
@@ -236,13 +303,12 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
     const cwd = if (root.get("cwd")) |cwd_value|
         try evalStringField(allocator, cwd_value, &eval_ctx, scanned.sentinels, error.CwdMustBeString)
     else
-        options.paths.exe_dir;
+        options.paths.launch_cwd;
 
     const command_value = root.get("command") orelse return error.MissingCommand;
     const command = try evalCommand(allocator, command_value, &eval_ctx, scanned.sentinels);
 
     return .{
-        .terminal = terminal,
         .kill_children_on_exit = kill_children_on_exit,
         .cwd = cwd,
         .command = command,
@@ -255,6 +321,7 @@ fn validateTopLevelShape(root: std.json.ObjectMap) !void {
     var it = root.iterator();
     while (it.next()) |entry| {
         const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "terminal")) return error.TerminalConfigRemoved;
         if (!isKnownTopLevelKey(key)) return error.UnknownTopLevelKey;
         if (saw_command) return error.CommandMustBeLast;
         if (std.mem.eql(u8, key, "command")) saw_command = true;
@@ -266,7 +333,6 @@ fn isKnownTopLevelKey(key: []const u8) bool {
     return std.mem.eql(u8, key, "command") or
         std.mem.eql(u8, key, "cwd") or
         std.mem.eql(u8, key, "env") or
-        std.mem.eql(u8, key, "terminal") or
         std.mem.eql(u8, key, "kill_children_on_exit") or
         std.mem.eql(u8, key, "error_on_missing_env") or
         std.mem.eql(u8, key, "error_on_arg_out_of_bounds");
@@ -295,24 +361,6 @@ fn parseEnv(
     }
 
     return try vars.toOwnedSlice(allocator);
-}
-
-fn parseTerminalMode(
-    allocator: std.mem.Allocator,
-    root: std.json.ObjectMap,
-    ctx: *template_expr.EvalContext,
-    sentinels: []const template_scan.Sentinel,
-) !TerminalMode {
-    const value = root.get("terminal") orelse return .auto;
-    return switch (value) {
-        .bool => |b| if (b) .visible else .hidden,
-        .string => |s| {
-            const resolved = try evalTemplateString(allocator, s, ctx, sentinels);
-            if (std.mem.eql(u8, resolved, "auto")) return .auto;
-            return error.InvalidTerminalMode;
-        },
-        else => error.InvalidTerminalMode,
-    };
 }
 
 fn evalStringField(
@@ -419,61 +467,6 @@ fn stringContainsSentinel(value: []const u8, sentinels: []const template_scan.Se
         if (std.mem.indexOf(u8, value, sentinel.uuid) != null) return true;
     }
     return false;
-}
-
-pub const WindowsSubsystem = enum {
-    native,
-    windows_gui,
-    windows_console,
-    other,
-};
-
-pub fn windowsSubsystemFromPeBytes(bytes: []const u8) !WindowsSubsystem {
-    const dos_lfanew_offset = 0x3c;
-    if (bytes.len < dos_lfanew_offset + @sizeOf(u32)) return error.InvalidPeFile;
-    if (!std.mem.eql(u8, bytes[0..2], "MZ")) return error.InvalidPeFile;
-
-    const pe_offset = readLittleInt(u32, bytes, dos_lfanew_offset);
-    const pe_offset_usize: usize = @intCast(pe_offset);
-    if (pe_offset_usize > bytes.len or bytes.len - pe_offset_usize < 24) return error.InvalidPeFile;
-    if (!std.mem.eql(u8, bytes[pe_offset_usize..][0..4], "PE\x00\x00")) return error.InvalidPeFile;
-
-    const optional_header_size = readLittleInt(u16, bytes, pe_offset_usize + 20);
-    const optional_header_offset = pe_offset_usize + 24;
-    const subsystem_offset = optional_header_offset + 68;
-    if (optional_header_size < 70 or subsystem_offset + @sizeOf(u16) > bytes.len) return error.InvalidPeFile;
-
-    const magic = readLittleInt(u16, bytes, optional_header_offset);
-    if (magic != 0x10b and magic != 0x20b) return error.InvalidPeFile;
-
-    return switch (readLittleInt(u16, bytes, subsystem_offset)) {
-        1 => .native,
-        2 => .windows_gui,
-        3 => .windows_console,
-        else => .other,
-    };
-}
-
-pub fn terminalVisibleFromWindowsSubsystem(subsystem: WindowsSubsystem) ?bool {
-    return switch (subsystem) {
-        .windows_console => true,
-        .windows_gui => false,
-        else => null,
-    };
-}
-
-pub fn detectTerminalVisibility(
-    allocator: std.mem.Allocator,
-    executable_path: []const u8,
-) bool {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, executable_path, max_pe_probe_bytes) catch return true;
-    defer allocator.free(bytes);
-    const subsystem = windowsSubsystemFromPeBytes(bytes) catch return true;
-    return terminalVisibleFromWindowsSubsystem(subsystem) orelse true;
-}
-
-fn readLittleInt(comptime T: type, bytes: []const u8, offset: usize) T {
-    return std.mem.readInt(T, bytes[offset..][0..@sizeOf(T)], .little);
 }
 
 fn rejectTemplateObjectKeys(value: std.json.Value, sentinels: []const template_scan.Sentinel) !void {
@@ -681,6 +674,10 @@ fn pathRoot(path: []const u8) []const u8 {
     return it.root() orelse "";
 }
 
+fn readInt(comptime T: type, bytes: []const u8, offset: usize) T {
+    return std.mem.readInt(T, bytes[offset..][0..@sizeOf(T)], .little);
+}
+
 fn normalizeConfigBytes(bytes: []const u8) []const u8 {
     var out = std.mem.trimLeft(u8, bytes, " \t\r\n");
     if (std.mem.startsWith(u8, out, "\xEF\xBB\xBF")) {
@@ -688,6 +685,24 @@ fn normalizeConfigBytes(bytes: []const u8) []const u8 {
         out = std.mem.trimLeft(u8, out, " \t\r\n");
     }
     return out;
+}
+
+fn writeMinimalPeHeader(bytes: []u8, magic: u16, subsystem: u16) void {
+    bytes[0] = 'M';
+    bytes[1] = 'Z';
+    std.mem.writeInt(u32, bytes[0x3c..][0..@sizeOf(u32)], 0x80, .little);
+    @memcpy(bytes[0x80..][0..4], "PE\x00\x00");
+    std.mem.writeInt(u16, bytes[0x80 + 20 ..][0..@sizeOf(u16)], 0xf0, .little);
+    std.mem.writeInt(u16, bytes[0x80 + 24 ..][0..@sizeOf(u16)], magic, .little);
+    std.mem.writeInt(u16, bytes[0x80 + 24 + 68 ..][0..@sizeOf(u16)], subsystem, .little);
+}
+
+fn writeMinimalPeHeaderWithSection(bytes: []u8, magic: u16, subsystem: u16, raw_pointer: u32, raw_size: u32) void {
+    writeMinimalPeHeader(bytes, magic, subsystem);
+    std.mem.writeInt(u16, bytes[0x80 + 6 ..][0..@sizeOf(u16)], 1, .little);
+    const section_offset = 0x80 + 24 + 0xf0;
+    std.mem.writeInt(u32, bytes[section_offset + 16 ..][0..@sizeOf(u32)], raw_size, .little);
+    std.mem.writeInt(u32, bytes[section_offset + 20 ..][0..@sizeOf(u32)], raw_pointer, .little);
 }
 
 test "normalizes UTF-8 BOM before parsing config" {
@@ -708,8 +723,8 @@ test "normalizes UTF-8 BOM before parsing config" {
         paths,
     );
 
-    try std.testing.expectEqual(TerminalMode.auto, config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
+    try std.testing.expectEqualStrings("C:\\work", config.cwd);
     try std.testing.expectEqualStrings("cmd.exe", config.command[0]);
 }
 
@@ -756,175 +771,38 @@ test "overlay markers are documented ASCII UUID strings" {
     try std.testing.expectEqualStrings("ce3beca3-7ed2-40a4-9133-f82198be1d7b", config_end_marker);
 }
 
-test "windows PE subsystem inspection identifies console and GUI executables" {
-    var bytes = [_]u8{0} ** 256;
-    bytes[0] = 'M';
-    bytes[1] = 'Z';
-    std.mem.writeInt(u32, bytes[0x3c..][0..4], 0x80, .little);
-    @memcpy(bytes[0x80..][0..4], "PE\x00\x00");
-    std.mem.writeInt(u16, bytes[0x80 + 20 ..][0..2], 0xf0, .little);
-    std.mem.writeInt(u16, bytes[0x80 + 24 ..][0..2], 0x20b, .little);
+test "windows PE subsystem helper identifies and patches PE32 and PE32+" {
+    var pe32 = [_]u8{0} ** 512;
+    writeMinimalPeHeader(&pe32, 0x10b, pe_subsystem_console);
+    try std.testing.expectEqual(WindowsSubsystem.windows_console, try windowsSubsystemFromPeBytes(&pe32));
+    try setWindowsSubsystemInBytes(&pe32, .windows_gui);
+    try std.testing.expectEqual(WindowsSubsystem.windows_gui, try windowsSubsystemFromPeBytes(&pe32));
 
-    std.mem.writeInt(u16, bytes[0x80 + 24 + 68 ..][0..2], 3, .little);
-    const console = try windowsSubsystemFromPeBytes(&bytes);
-    try std.testing.expectEqual(WindowsSubsystem.windows_console, console);
-    try std.testing.expectEqual(true, terminalVisibleFromWindowsSubsystem(console).?);
-
-    std.mem.writeInt(u16, bytes[0x80 + 24 + 68 ..][0..2], 2, .little);
-    const gui = try windowsSubsystemFromPeBytes(&bytes);
-    try std.testing.expectEqual(WindowsSubsystem.windows_gui, gui);
-    try std.testing.expectEqual(false, terminalVisibleFromWindowsSubsystem(gui).?);
+    var pe32_plus = [_]u8{0} ** 512;
+    writeMinimalPeHeader(&pe32_plus, 0x20b, pe_subsystem_windowed);
+    try std.testing.expectEqual(WindowsSubsystem.windows_gui, try windowsSubsystemFromPeBytes(&pe32_plus));
+    try setWindowsSubsystemInBytes(&pe32_plus, .windows_console);
+    try std.testing.expectEqual(WindowsSubsystem.windows_console, try windowsSubsystemFromPeBytes(&pe32_plus));
 
     try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes("not pe"));
+    try std.testing.expectError(error.InvalidPeFile, setWindowsSubsystemInBytes(pe32[0..2], .windows_console));
 }
 
-test "windows PE subsystem inspection rejects malformed inputs without overread" {
-    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(""));
-    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes("MZ"));
-
-    var bad_offset = [_]u8{0} ** 0x40;
-    bad_offset[0] = 'M';
-    bad_offset[1] = 'Z';
-    std.mem.writeInt(u32, bad_offset[0x3c..][0..4], 0x80, .little);
-    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&bad_offset));
-
-    var bad_signature = [_]u8{0} ** 0x100;
-    bad_signature[0] = 'M';
-    bad_signature[1] = 'Z';
-    std.mem.writeInt(u32, bad_signature[0x3c..][0..4], 0x80, .little);
-    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&bad_signature));
-
-    var short_optional = [_]u8{0} ** 0x100;
-    short_optional[0] = 'M';
-    short_optional[1] = 'Z';
-    std.mem.writeInt(u32, short_optional[0x3c..][0..4], 0x80, .little);
-    @memcpy(short_optional[0x80..][0..4], "PE\x00\x00");
-    std.mem.writeInt(u16, short_optional[0x80 + 20 ..][0..2], 2, .little);
-    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&short_optional));
-
-    var bad_magic = [_]u8{0} ** 0x100;
-    bad_magic[0] = 'M';
-    bad_magic[1] = 'Z';
-    std.mem.writeInt(u32, bad_magic[0x3c..][0..4], 0x80, .little);
-    @memcpy(bad_magic[0x80..][0..4], "PE\x00\x00");
-    std.mem.writeInt(u16, bad_magic[0x80 + 20 ..][0..2], 0xf0, .little);
-    std.mem.writeInt(u16, bad_magic[0x80 + 24 ..][0..2], 0x999, .little);
-    try std.testing.expectError(error.InvalidPeFile, windowsSubsystemFromPeBytes(&bad_magic));
-}
-
-test "windows PE subsystem inspection handles host console and GUI executables" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    const system_root = std.process.getEnvVarOwned(allocator, "SystemRoot") catch return error.SkipZigTest;
-    defer allocator.free(system_root);
-
-    const cmd_path = try std.fs.path.join(allocator, &.{ system_root, "System32", "cmd.exe" });
-    defer allocator.free(cmd_path);
-    const notepad_path = try std.fs.path.join(allocator, &.{ system_root, "System32", "notepad.exe" });
-    defer allocator.free(notepad_path);
-
-    const cmd_bytes = try std.fs.cwd().readFileAlloc(allocator, cmd_path, 4 * 1024 * 1024);
-    defer allocator.free(cmd_bytes);
-    const notepad_bytes = try std.fs.cwd().readFileAlloc(allocator, notepad_path, 4 * 1024 * 1024);
-    defer allocator.free(notepad_bytes);
-
-    try std.testing.expectEqual(WindowsSubsystem.windows_console, try windowsSubsystemFromPeBytes(cmd_bytes));
-    try std.testing.expectEqual(WindowsSubsystem.windows_gui, try windowsSubsystemFromPeBytes(notepad_bytes));
-}
-
-test "terminal auto visibility probe handles ragtag command paths" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
-
-    const allocator = std.testing.allocator;
-    const system_root = std.process.getEnvVarOwned(allocator, "SystemRoot") catch return error.SkipZigTest;
-    defer allocator.free(system_root);
-
-    var checked: usize = 0;
-    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "cmd.exe" }), true);
-    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "where.exe" }), true);
-    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "notepad.exe" }), false);
-    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "wscript.exe" }), false);
-    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe" }), true);
-    checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ system_root, "SysWOW64", "cmd.exe" }), true);
-
-    if (std.process.getEnvVarOwned(allocator, "ProgramFiles")) |program_files| {
-        defer allocator.free(program_files);
-        checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ program_files, "7-Zip", "7z.exe" }), true);
-        checked += try expectAutoVisibilityIfExists(allocator, try std.fs.path.join(allocator, &.{ program_files, "7-Zip", "7zFM.exe" }), false);
-    } else |_| {}
-
+test "windows PE subsystem helper patches files" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "probe.cmd", .data = "@echo off\r\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "probe.bat", .data = "@echo off\r\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "plain.txt", .data = "plain text is not a PE file\r\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "truncated.exe", .data = "MZ" });
 
-    const cmd_script = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "probe.cmd" });
-    defer allocator.free(cmd_script);
-    const bat_script = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "probe.bat" });
-    defer allocator.free(bat_script);
-    const text_file = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "plain.txt" });
-    defer allocator.free(text_file);
-    const truncated_exe = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "truncated.exe" });
-    defer allocator.free(truncated_exe);
-    const missing_exe = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "missing.exe" });
-    defer allocator.free(missing_exe);
+    var bytes = [_]u8{0} ** 512;
+    writeMinimalPeHeader(&bytes, 0x20b, pe_subsystem_windowed);
+    try tmp.dir.writeFile(.{ .sub_path = "launcher.exe", .data = &bytes });
 
-    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, cmd_script));
-    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, bat_script));
-    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, text_file));
-    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, truncated_exe));
-    try std.testing.expectEqual(true, detectTerminalVisibility(allocator, missing_exe));
-    try std.testing.expect(checked >= 4);
-}
+    const file = try tmp.dir.openFile("launcher.exe", .{ .mode = .read_write });
+    defer file.close();
+    try setWindowsSubsystemInFile(file, .windows_console);
 
-test "embedded config ignores marker literals inside PE image" {
-    var bytes = [_]u8{0} ** 0x300;
-    writeMinimalPeHeader(&bytes, 0x200, 0x100);
-    @memcpy(bytes[0x220..][0..config_start_marker.len], config_start_marker);
-
-    try std.testing.expect(embeddedConfigRangeFromBytes(&bytes) == null);
-    try std.testing.expectError(error.NoEmbeddedConfig, embeddedConfigFromBytes(&bytes));
-}
-
-test "embedded config scans PE overlay after image data" {
-    const config_text = "{\"command\":[\"cmd.exe\"]}";
-    var bytes = [_]u8{0} ** (0x300 + config_start_marker.len + config_text.len);
-    writeMinimalPeHeader(&bytes, 0x200, 0x100);
-    @memcpy(bytes[0x220..][0..config_start_marker.len], config_start_marker);
-    @memcpy(bytes[0x300..][0..config_start_marker.len], config_start_marker);
-    @memcpy(bytes[0x300 + config_start_marker.len ..][0..config_text.len], config_text);
-
-    const range = embeddedConfigRangeFromBytes(&bytes).?;
-    try std.testing.expectEqual(@as(usize, 0x300), range.marker_start);
-    try std.testing.expectEqualStrings(config_text, try embeddedConfigFromBytes(&bytes));
-}
-
-fn writeMinimalPeHeader(bytes: []u8, raw_pointer: u32, raw_size: u32) void {
-    bytes[0] = 'M';
-    bytes[1] = 'Z';
-    std.mem.writeInt(u32, bytes[0x3c..][0..4], 0x80, .little);
-    @memcpy(bytes[0x80..][0..4], "PE\x00\x00");
-    std.mem.writeInt(u16, bytes[0x80 + 6 ..][0..2], 1, .little);
-    std.mem.writeInt(u16, bytes[0x80 + 20 ..][0..2], 0xf0, .little);
-    std.mem.writeInt(u16, bytes[0x80 + 24 ..][0..2], 0x20b, .little);
-
-    const section_offset = 0x80 + 24 + 0xf0;
-    std.mem.writeInt(u32, bytes[section_offset + 16 ..][0..4], raw_size, .little);
-    std.mem.writeInt(u32, bytes[section_offset + 20 ..][0..4], raw_pointer, .little);
-}
-
-fn expectAutoVisibilityIfExists(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    expected: bool,
-) !usize {
-    defer allocator.free(path);
-    std.fs.cwd().access(path, .{}) catch return 0;
-    try std.testing.expectEqual(expected, detectTerminalVisibility(allocator, path));
-    return 1;
+    const patched = try tmp.dir.readFileAlloc(std.testing.allocator, "launcher.exe", bytes.len);
+    defer std.testing.allocator.free(patched);
+    try std.testing.expectEqual(WindowsSubsystem.windows_console, try windowsSubsystemFromPeBytes(patched));
 }
 
 test "embedded config reads to EOF when end marker is absent" {
@@ -967,6 +845,28 @@ test "embedded config uses the last start marker" {
     try std.testing.expectEqualStrings("{\"command\":[\"cmd.exe\"]}", config);
 }
 
+test "embedded config ignores marker literals inside PE image" {
+    var bytes = [_]u8{0} ** 0x400;
+    writeMinimalPeHeaderWithSection(&bytes, 0x20b, pe_subsystem_console, 0x200, 0x100);
+    @memcpy(bytes[0x220..][0..config_start_marker.len], config_start_marker);
+
+    try std.testing.expect(embeddedConfigRangeFromBytes(&bytes) == null);
+    try std.testing.expectError(error.NoEmbeddedConfig, embeddedConfigFromBytes(&bytes));
+}
+
+test "embedded config scans PE overlay after image data" {
+    const config_text = "{\"command\":[\"cmd.exe\"]}";
+    var bytes = [_]u8{0} ** (0x300 + config_start_marker.len + config_text.len);
+    writeMinimalPeHeaderWithSection(&bytes, 0x20b, pe_subsystem_console, 0x200, 0x100);
+    @memcpy(bytes[0x220..][0..config_start_marker.len], config_start_marker);
+    @memcpy(bytes[0x300..][0..config_start_marker.len], config_start_marker);
+    @memcpy(bytes[0x300 + config_start_marker.len ..][0..config_text.len], config_text);
+
+    const range = embeddedConfigRangeFromBytes(&bytes).?;
+    try std.testing.expectEqual(@as(usize, 0x300), range.marker_start);
+    try std.testing.expectEqualStrings(config_text, try embeddedConfigFromBytes(&bytes));
+}
+
 test "parse config expands paths" {
     const allocator = std.testing.allocator;
     const paths = RuntimePaths{
@@ -978,7 +878,6 @@ test "parse config expands paths" {
     };
     const json =
         \\{
-        \\  "terminal": true,
         \\  "cwd": "@{exe_dir}",
         \\  "env": { "SCRIPT_HOME": "@{exe_dir}" },
         \\  "command": ["cmd.exe", "/C", "@{exe_dir}\\run.cmd"]
@@ -989,7 +888,6 @@ test "parse config expands paths" {
     defer arena.deinit();
     const config = try parseConfig(arena.allocator(), json, paths);
 
-    try std.testing.expectEqual(TerminalMode.visible, config.terminal);
     try std.testing.expect(!config.kill_children_on_exit);
     try std.testing.expectEqualStrings("C:\\apps\\demo", config.cwd);
     try std.testing.expectEqual(@as(usize, 3), config.command.len);
@@ -1020,191 +918,6 @@ test "parse config accepts kill children on exit option" {
 
     try std.testing.expect(config.kill_children_on_exit);
 }
-
-test "terminal mode defaults to auto and accepts strict values" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    const paths = RuntimePaths{
-        .exe_path = "C:\\apps\\demo\\demo.exe",
-        .exe_dir = "C:\\apps\\demo",
-        .exe_name = "demo.exe",
-        .exe_stem = "demo",
-        .launch_cwd = "C:\\work",
-    };
-    var env_map = std.process.EnvMap.init(allocator);
-    try env_map.put("TERMINAL_MODE", "auto");
-
-    const default_config = try parseConfigWithOptions(
-        allocator,
-        "{\"command\":[\"cmd.exe\"]}",
-        .{ .paths = paths, .env_map = &env_map },
-    );
-    try std.testing.expectEqual(TerminalMode.auto, default_config.terminal);
-
-    const true_config = try parseConfigWithOptions(
-        allocator,
-        "{\"terminal\":true,\"command\":[\"cmd.exe\"]}",
-        .{ .paths = paths, .env_map = &env_map },
-    );
-    try std.testing.expectEqual(TerminalMode.visible, true_config.terminal);
-
-    const false_config = try parseConfigWithOptions(
-        allocator,
-        "{\"terminal\":false,\"command\":[\"cmd.exe\"]}",
-        .{ .paths = paths, .env_map = &env_map },
-    );
-    try std.testing.expectEqual(TerminalMode.hidden, false_config.terminal);
-
-    const auto_config = try parseConfigWithOptions(
-        allocator,
-        "{\"terminal\":\"@{env:\"TERMINAL_MODE\"}\",\"command\":[\"cmd.exe\"]}",
-        .{ .paths = paths, .env_map = &env_map },
-    );
-    try std.testing.expectEqual(TerminalMode.auto, auto_config.terminal);
-
-    try std.testing.expectError(error.InvalidTerminalMode, parseConfigWithOptions(
-        allocator,
-        "{\"terminal\":\"true\",\"command\":[\"cmd.exe\"]}",
-        .{ .paths = paths, .env_map = &env_map },
-    ));
-
-    try std.testing.expectError(error.InvalidTerminalMode, parseConfigWithOptions(
-        allocator,
-        "{\"terminal\":1,\"command\":[\"cmd.exe\"]}",
-        .{ .paths = paths, .env_map = &env_map },
-    ));
-}
-
-test "command resolver uses final cwd PATH and PATHEXT" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var env_map = std.process.EnvMap.init(allocator);
-    try env_map.put("PATH", "C:\\Ignored;C:\\Tools");
-    try env_map.put("PATHEXT", ".PY;.EXE;.CMD");
-
-    const mock = MockFiles{ .paths = &.{
-        "C:\\App\\python.EXE",
-        "C:\\Tools\\tool.CMD",
-        "C:\\Tools\\script.PY",
-        "C:\\Tools\\script.EXE",
-    } };
-
-    const command = [_][]const u8{ "python", "-V" };
-    const resolved = try command_resolve.resolveCommandForSpawn(allocator, &command, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-    try std.testing.expect(resolved.found);
-    try std.testing.expectEqualStrings("C:\\App\\python.EXE", resolved.executable_path);
-    try std.testing.expectEqualStrings("C:\\App\\python.EXE", resolved.argv[0]);
-    try std.testing.expectEqualStrings("-V", resolved.argv[1]);
-
-    const path_command = [_][]const u8{ "tool", "arg" };
-    const path_resolved = try command_resolve.resolveCommandForSpawn(allocator, &path_command, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-    try std.testing.expect(path_resolved.found);
-    try std.testing.expectEqualStrings("C:\\Tools\\tool.CMD", path_resolved.executable_path);
-    try std.testing.expectEqualStrings("C:\\Tools\\tool.CMD", path_resolved.argv[0]);
-
-    const unsupported_first = [_][]const u8{"script"};
-    const unsupported_resolved = try command_resolve.resolveCommandForSpawn(allocator, &unsupported_first, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-    try std.testing.expect(unsupported_resolved.found);
-    try std.testing.expectEqualStrings("C:\\Tools\\script.EXE", unsupported_resolved.executable_path);
-}
-
-test "command resolver supports batch scripts but skips extensionless VBS" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var env_map = std.process.EnvMap.init(allocator);
-    try env_map.put("PATH", "C:\\Tools");
-    try env_map.put("PATHEXT", ".VBS;.BAT;.CMD;.EXE");
-
-    const mock = MockFiles{ .paths = &.{
-        "C:\\Tools\\only_vbs.VBS",
-        "C:\\Tools\\tool.BAT",
-        "C:\\Tools\\script.CMD",
-    } };
-
-    const bat_command = [_][]const u8{"tool"};
-    const bat_resolved = try command_resolve.resolveCommandForSpawn(allocator, &bat_command, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-    try std.testing.expect(bat_resolved.found);
-    try std.testing.expectEqualStrings("C:\\Tools\\tool.BAT", bat_resolved.executable_path);
-
-    const cmd_command = [_][]const u8{"script"};
-    const cmd_resolved = try command_resolve.resolveCommandForSpawn(allocator, &cmd_command, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-    try std.testing.expect(cmd_resolved.found);
-    try std.testing.expectEqualStrings("C:\\Tools\\script.CMD", cmd_resolved.executable_path);
-
-    const vbs_command = [_][]const u8{"only_vbs"};
-    const vbs_resolved = try command_resolve.resolveCommandForSpawn(allocator, &vbs_command, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-    try std.testing.expect(!vbs_resolved.found);
-    try std.testing.expectEqualStrings("only_vbs", vbs_resolved.executable_path);
-}
-
-test "command resolver leaves unresolved commands untouched" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    var env_map = std.process.EnvMap.init(allocator);
-    try env_map.put("PATH", "C:\\Tools");
-
-    const mock = MockFiles{ .paths = &.{} };
-    const command = [_][]const u8{ "missing.exe", "arg" };
-    const resolved = try command_resolve.resolveCommandForSpawn(allocator, &command, .{
-        .cwd = "C:\\App",
-        .env_map = &env_map,
-        .file_exists = MockFiles.exists,
-        .file_exists_context = &mock,
-    });
-
-    try std.testing.expect(!resolved.found);
-    try std.testing.expectEqualStrings("missing.exe", resolved.executable_path);
-    try std.testing.expectEqualStrings("missing.exe", resolved.argv[0]);
-}
-
-const MockFiles = struct {
-    paths: []const []const u8,
-
-    fn exists(context: ?*const anyopaque, path: []const u8) bool {
-        const self: *const MockFiles = @ptrCast(@alignCast(context.?));
-        for (self.paths) |candidate| {
-            if (std.ascii.eqlIgnoreCase(candidate, path)) return true;
-        }
-        return false;
-    }
-};
 
 test "commandline alias is not accepted" {
     const allocator = std.testing.allocator;
@@ -1237,19 +950,25 @@ test "top-level keys are strict and command must be last" {
 
     try std.testing.expectError(error.UnknownTopLevelKey, parseConfigWithOptions(
         allocator,
-        "{\"terminal\":true,\"foobar\":false,\"command\":[\"cmd.exe\"]}",
+        "{\"foobar\":false,\"command\":[\"cmd.exe\"]}",
         .{ .paths = paths, .env_map = &env_map },
     ));
 
     try std.testing.expectError(error.CommandMustBeLast, parseConfigWithOptions(
         allocator,
-        "{\"command\":[\"cmd.exe\"],\"terminal\":true}",
+        "{\"command\":[\"cmd.exe\"],\"cwd\":\"C:\\\\work\"}",
         .{ .paths = paths, .env_map = &env_map },
     ));
 
     try std.testing.expectError(error.MissingCommand, parseConfigWithOptions(
         allocator,
-        "{\"terminal\":true}",
+        "{}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.TerminalConfigRemoved, parseConfigWithOptions(
+        allocator,
+        "{\"terminal\":true,\"command\":[\"cmd.exe\"]}",
         .{ .paths = paths, .env_map = &env_map },
     ));
 }
@@ -1341,7 +1060,6 @@ test "templated JSON command supports raw quotes and args splicing" {
     const args = [_][]const u8{ "--input", "file.json", "--verbose" };
     const json =
         \\{
-        \\  "terminal": true,
         \\  "cwd": "@{exe_dir:parent:join("app")}",
         \\  "command": [
         \\    "@{exe_dir:parent:join("python"):join("python.exe")}",
@@ -1359,7 +1077,6 @@ test "templated JSON command supports raw quotes and args splicing" {
         .env_map = &env_map,
     });
 
-    try std.testing.expectEqual(TerminalMode.visible, config.terminal);
     try std.testing.expectEqualStrings("C:\\Bundle\\app", config.cwd);
     try std.testing.expectEqual(@as(usize, 6), config.command.len);
     try std.testing.expectEqualStrings("C:\\Bundle\\python\\python.exe", config.command[0]);
