@@ -604,6 +604,10 @@ Leave it unset when the child process is intentionally long-lived.
 - [Implementation notes](docs/implementation-notes.md): design rationale and
   implementation tradeoffs.
 
+## License
+
+ExeWrap is licensed under the MIT License. See [LICENSE](LICENSE).
+
 ## Prior Art
 
 Similar projects and use cases:
