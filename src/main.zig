@@ -80,12 +80,24 @@ pub fn main() !void {
         .env_map = &env_map,
     });
 
-    var child = std.process.Child.init(config.command, scratch);
+    const resolved_command = try launcher.command_resolve.resolveCommandForSpawn(scratch, config.command, .{
+        .cwd = config.cwd,
+        .env_map = &env_map,
+    });
+
+    var child = std.process.Child.init(resolved_command.argv, scratch);
     child.cwd = config.cwd;
     child.env_map = &env_map;
-    child.create_no_window = !config.terminal;
 
-    if (config.terminal) {
+    const terminal_visible = switch (config.terminal) {
+        .visible => true,
+        .hidden => false,
+        .auto => launcher.detectTerminalVisibility(scratch, resolved_command.executable_path),
+    };
+
+    child.create_no_window = !terminal_visible;
+
+    if (terminal_visible) {
         child.stdin_behavior = .Inherit;
         child.stdout_behavior = .Inherit;
         child.stderr_behavior = .Inherit;

@@ -81,7 +81,6 @@ code pages, and other non-utf-8 byte sequences are rejected.
 
 ```json
 {
-  "terminal": true,
   "cwd": "@{exe_dir}",
   "command": ["cmd.exe", "/C", "echo hello && pause"]
 }
@@ -94,12 +93,34 @@ code pages, and other non-utf-8 byte sequences are rejected.
 | `command` | Yes | array of strings/splices | Child argv. Each entry is one argument. |
 | `cwd` | No | string | Child working directory. Defaults to `@{exe_dir}`. |
 | `env` | No | ordered object | Environment edits applied before starting the child. Later values can read earlier edits. |
-| `terminal` | No | boolean | When omitted or `true`, allows a console child to show/use a terminal. When `false`, starts the child with no window and ignored stdio. |
+| `terminal` | No | `true`, `false`, or `"auto"` | Controls console visibility and stdio handling. |
 | `kill_children_on_exit` | No | boolean | Kills the child process tree if the launcher exits or is killed. |
 | `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. Otherwise missing env values resolve to an empty string. |
 | `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args:N}` lookups fail. Otherwise missing args resolve to an empty string. |
 
-If `terminal` is omitted, it defaults to `true`.
+If `terminal` is omitted, it defaults to `"auto"`:
+
+- `true` lets the child inherit stdio and use a visible console.
+- `false` starts the child with no window and ignored stdio.
+- `"auto"` inspects the resolved executable at `command[0]`. A Windows console
+  subsystem executable behaves like `true`; a Windows GUI subsystem executable
+  behaves like `false`. If inspection fails or the subsystem is ambiguous,
+  ExeWrap falls back to `true`.
+
+`"auto"` is useful, but it is not magic. It can only inspect `command[0]`.
+Bare commands such as `python.exe` are resolved through the child environment's
+`PATH`; extensionless commands such as `python` also use `PATHEXT`. The lookup
+checks the final child `cwd` first, then each `PATH` directory, using `PATHEXT`
+order for extensionless names. When ExeWrap finds the executable, it replaces
+`command[0]` with that concrete path before spawning, and `"auto"` inspects the
+same file. Launchers, script hosts, and programs that decide at execution time
+whether to act like a console or GUI app may need an explicit `true` or `false`.
+`PATHEXT` lookup is limited to extensions Windows can spawn directly here:
+`.COM`, `.EXE`, `.BAT`, and `.CMD`. Run `.vbs` scripts through `wscript.exe` or
+`cscript.exe` explicitly when you want Windows Script Host behavior.
+
+When present, `terminal` must evaluate to exactly JSON `true`, JSON `false`, or
+the string `"auto"`. Other strings and other JSON types are rejected.
 
 The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
 object keys. `command` is required and must be the final top-level key, so all
@@ -575,8 +596,6 @@ Leave it unset when the child process is intentionally long-lived.
 
 ## Related Documents
 
-- [Templated JSON spec](docs/template-spec.html): full language and processing-pass
-  details.
 - [Implementation notes](docs/implementation-notes.md): design rationale and
   implementation tradeoffs.
 
