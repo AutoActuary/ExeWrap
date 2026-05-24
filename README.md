@@ -102,7 +102,7 @@ code pages, and other non-utf-8 byte sequences are rejected.
 | `cwd` | No | string | Child working directory. Defaults to `@{cwd}`, the directory where the launcher was started. |
 | `env` | No | ordered object | Environment edits applied before starting the child. Later values can read earlier edits. |
 | `kill_children_on_exit` | No | boolean | Kills the child process tree if the launcher exits or is killed. |
-| `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. Otherwise missing env values resolve to an empty string. |
+| `error_on_missing_env` | No | boolean | Makes missing `@{env["NAME"]}` lookups fail. Otherwise missing env values resolve to an empty string. |
 | `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args[N]}` lookups fail. Otherwise missing args resolve to an empty string. |
 
 The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
@@ -239,8 +239,8 @@ why raw array entries such as `@{args}` and normal quotes in expressions such as
 Environment lookup:
 
 ```text
-@{env:"PATH"}
-@{env:"LOCALAPPDATA"}
+@{env["PATH"]}
+@{env["LOCALAPPDATA"]}
 ```
 
 Missing environment variables resolve to an empty string unless
@@ -285,10 +285,10 @@ backslashes still need to be doubled as `\\`.
 | --- | --- |
 | `lower` | `@{exe_filename_noext:lower}` |
 | `upper` | `@{exe_filename_noext:upper}` |
-| `trim` | `@{env:"NAME":trim}` |
+| `trim` | `@{env["NAME"]:trim}` |
 | `prefix("text")` | `@{exe_filename_noext:prefix("tool-")}` |
 | `suffix("text")` | `@{exe_filename_noext:suffix(".log")}` |
-| `json` | `@{env:"TEXT":json}` |
+| `json` | `@{env["TEXT"]:json}` |
 
 `lower` and `upper` are ASCII transforms.
 
@@ -309,7 +309,7 @@ Example:
 ```json
 {
   "env": {
-    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python")):unique_env}"
+    "PATH": "@{env["PATH"]:prepend_env(exe_dir:parent:join("python")):unique_env}"
   },
   "command": ["cmd.exe", "/C", "where python && pause"]
 }
@@ -379,8 +379,8 @@ variables.
 ```json
 {
   "env": {
-    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}",
-    "PATH_AFTER": "@{env:"PATH"}"
+    "PATH": "@{env["PATH"]:prepend_env(exe_dir:parent:join("python"))}",
+    "PATH_AFTER": "@{env["PATH"]}"
   },
   "command": ["cmd.exe", "/C", "echo %PATH_AFTER%"]
 }
@@ -586,7 +586,7 @@ instead of resolving to an empty string.
 
 ### An environment variable is missing
 
-Missing `@{env:"NAME"}` values resolve to an empty string by default. Set
+Missing `@{env["NAME"]}` values resolve to an empty string by default. Set
 `error_on_missing_env` to `true` when that should be a launch error.
 
 ### Child processes survive after closing the launcher

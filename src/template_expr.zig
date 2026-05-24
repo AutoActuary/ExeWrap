@@ -331,10 +331,11 @@ const Parser = struct {
         _ = self.advance();
 
         if (std.mem.eql(u8, token.lexeme, "env")) {
-            try self.expect(.colon);
+            try self.expect(.open_bracket);
             const name = self.current();
             if (name.tag != .string) return error.ExpectedString;
             _ = self.advance();
+            try self.expect(.close_bracket);
             return .{ .env = name.string };
         }
 
@@ -480,9 +481,7 @@ const Parser = struct {
 };
 
 fn tokenIntegerAsI64(token: Token) !i64 {
-    const max_i64_as_usize: usize = @intCast(std.math.maxInt(i64));
-    if (token.integer > max_i64_as_usize) return error.IntegerOutOfRange;
-    return @intCast(token.integer);
+    return std.math.cast(i64, token.integer) orelse error.IntegerOutOfRange;
 }
 
 fn evaluateSource(ctx: *EvalContext, source: Source) anyerror!Value {
@@ -1127,16 +1126,18 @@ test "tokenizer handles identifiers strings integers and punctuation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const tokens = try tokenize(allocator, "env:\"PA\\\"TH\":prepend_env(exe_dir:parent:join(\"python\")):1");
+    const tokens = try tokenize(allocator, "env[\"PA\\\"TH\"]:prepend_env(exe_dir:parent:join(\"python\")):1");
 
     try std.testing.expectEqual(TokenTag.identifier, tokens[0].tag);
     try std.testing.expectEqualStrings("env", tokens[0].lexeme);
-    try std.testing.expectEqual(TokenTag.colon, tokens[1].tag);
+    try std.testing.expectEqual(TokenTag.open_bracket, tokens[1].tag);
     try std.testing.expectEqual(TokenTag.string, tokens[2].tag);
     try std.testing.expectEqualStrings("PA\"TH", tokens[2].string);
-    try std.testing.expectEqual(TokenTag.identifier, tokens[4].tag);
-    try std.testing.expectEqualStrings("prepend_env", tokens[4].lexeme);
-    try std.testing.expectEqual(TokenTag.open_paren, tokens[5].tag);
+    try std.testing.expectEqual(TokenTag.close_bracket, tokens[3].tag);
+    try std.testing.expectEqual(TokenTag.colon, tokens[4].tag);
+    try std.testing.expectEqual(TokenTag.identifier, tokens[5].tag);
+    try std.testing.expectEqualStrings("prepend_env", tokens[5].lexeme);
+    try std.testing.expectEqual(TokenTag.open_paren, tokens[6].tag);
     try std.testing.expectEqual(TokenTag.integer, tokens[tokens.len - 2].tag);
     try std.testing.expectEqual(@as(usize, 1), tokens[tokens.len - 2].integer);
     try std.testing.expectEqual(TokenTag.eof, tokens[tokens.len - 1].tag);
@@ -1146,9 +1147,10 @@ test "parser builds env lookup with nested transform argument" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const expression = try parse(allocator, "env:\"PATH\":prepend_env(exe_dir:parent:join(\"python\"))");
+    const expression = try parse(allocator, "env[\"PATH\"]:prepend_env(exe_dir:parent:join(\"python\"))");
 
     try std.testing.expectEqual(Source.env, std.meta.activeTag(expression.source));
+    try std.testing.expectEqualStrings("PATH", expression.source.env);
     try std.testing.expectEqual(@as(usize, 1), expression.transforms.len);
     const named = expression.transforms[0].named;
     try std.testing.expectEqualStrings("prepend_env", named.name);
@@ -1185,8 +1187,8 @@ test "evaluates string transforms and JSON escaping" {
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("pre-mixed \"case\"-post", try evaluate("env:\"NAME\":trim:lower:prefix(\"pre-\"):suffix(\"-post\")", &ctx));
-    try expectStringValue("Line\\n\\\"quoted\\\"", try evaluate("env:\"TEXT\":prefix(\"Line\\n\\\"quoted\\\"\"):json", &ctx));
+    try expectStringValue("pre-mixed \"case\"-post", try evaluate("env[\"NAME\"]:trim:lower:prefix(\"pre-\"):suffix(\"-post\")", &ctx));
+    try expectStringValue("Line\\n\\\"quoted\\\"", try evaluate("env[\"TEXT\"]:prefix(\"Line\\n\\\"quoted\\\"\"):json", &ctx));
 }
 
 test "environment lookups default empty and can be strict" {
@@ -1198,9 +1200,9 @@ test "environment lookups default empty and can be strict" {
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("", try evaluate("env:\"MISSING\"", &ctx));
+    try expectStringValue("", try evaluate("env[\"MISSING\"]", &ctx));
     ctx.strictness.error_on_missing_env = true;
-    try std.testing.expectError(error.MissingEnvironmentVariable, evaluate("env:\"MISSING\"", &ctx));
+    try std.testing.expectError(error.MissingEnvironmentVariable, evaluate("env[\"MISSING\"]", &ctx));
 }
 
 test "argument indexing and slicing use Julia-style brackets" {
@@ -1254,12 +1256,12 @@ test "environment list transforms preserve order and avoid empty-list separators
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("C:\\Bundle\\Python;C:\\A;;C:\\B;C:\\A", try evaluate("env:\"PATH\":prepend_env(exe_dir:parent:join(\"Python\"))", &ctx));
-    try expectStringValue("C:\\A;;C:\\B;C:\\A;C:\\Tools", try evaluate("env:\"PATH\":append_env(\"C:\\\\Tools\")", &ctx));
-    try expectStringValue("C:\\A;;C:\\A", try evaluate("env:\"PATH\":remove_env(\"C:\\\\B\")", &ctx));
-    try expectStringValue("C:\\A;;C:\\B", try evaluate("env:\"PATH\":unique_env", &ctx));
-    try expectStringValue("C:\\Only", try evaluate("env:\"EMPTY\":prepend_env(\"C:\\\\Only\")", &ctx));
-    try expectStringValue("", try evaluate("env:\"EMPTY\":append_env(\"\")", &ctx));
+    try expectStringValue("C:\\Bundle\\Python;C:\\A;;C:\\B;C:\\A", try evaluate("env[\"PATH\"]:prepend_env(exe_dir:parent:join(\"Python\"))", &ctx));
+    try expectStringValue("C:\\A;;C:\\B;C:\\A;C:\\Tools", try evaluate("env[\"PATH\"]:append_env(\"C:\\\\Tools\")", &ctx));
+    try expectStringValue("C:\\A;;C:\\A", try evaluate("env[\"PATH\"]:remove_env(\"C:\\\\B\")", &ctx));
+    try expectStringValue("C:\\A;;C:\\B", try evaluate("env[\"PATH\"]:unique_env", &ctx));
+    try expectStringValue("C:\\Only", try evaluate("env[\"EMPTY\"]:prepend_env(\"C:\\\\Only\")", &ctx));
+    try expectStringValue("", try evaluate("env[\"EMPTY\"]:append_env(\"\")", &ctx));
 }
 
 test "path and env helpers release temporary containers" {
@@ -1290,7 +1292,10 @@ test "invalid syntax unknown names and wrong types fail explicitly" {
     const args = [_][]const u8{"alpha"};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try std.testing.expectError(error.ExpectedString, evaluate("env:PATH", &ctx));
+    try std.testing.expectError(error.ExpectedOpenBracket, evaluate("env:PATH", &ctx));
+    try std.testing.expectError(error.ExpectedOpenBracket, evaluate("env:\"PATH\"", &ctx));
+    try std.testing.expectError(error.ExpectedString, evaluate("env[PATH]", &ctx));
+    try std.testing.expectError(error.ExpectedCloseBracket, evaluate("env[\"PATH\"", &ctx));
     try std.testing.expectError(error.ExpectedCloseParen, evaluate("exe_dir:join(\"python\"", &ctx));
     try std.testing.expectError(error.ExpectedIndexExpression, evaluate("args[]", &ctx));
     try std.testing.expectError(error.ExpectedIndexExpression, evaluate("args[begin]", &ctx));

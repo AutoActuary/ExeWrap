@@ -1105,10 +1105,10 @@ test "environment values mutate in source order and command sees final env" {
     const json =
         \\{
         \\  "env": {
-        \\    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}",
-        \\    "PATH_AFTER": "@{env:"PATH"}"
+        \\    "PATH": "@{env["PATH"]:prepend_env(exe_dir:parent:join("python"))}",
+        \\    "PATH_AFTER": "@{env["PATH"]}"
         \\  },
-        \\  "command": ["@{env:"PATH_AFTER"}"]
+        \\  "command": ["@{env["PATH_AFTER"]}"]
         \\}
     ;
 
@@ -1139,7 +1139,7 @@ test "strict missing environment and arg index failures are reported" {
 
     try std.testing.expectError(error.MissingEnvironmentVariable, parseConfigWithOptions(
         allocator,
-        "{\"error_on_missing_env\":true,\"command\":[\"@{env:\"MISSING\"}\"]}",
+        "{\"error_on_missing_env\":true,\"command\":[\"@{env[\"MISSING\"]}\"]}",
         .{ .paths = paths, .env_map = &env_map },
     ));
 

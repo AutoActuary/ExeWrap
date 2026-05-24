@@ -189,8 +189,16 @@ fn reportConfigError(err: anyerror) void {
             "ExeWrap config error: list indexes must be integers or end expressions such as args[1], args[end], or args[end-1].\n",
             .{},
         ),
+        error.ExpectedOpenBracket => std.debug.print(
+            "ExeWrap config error: environment lookups must use bracketed keys such as env[\"PATH\"].\n",
+            .{},
+        ),
+        error.ExpectedString => std.debug.print(
+            "ExeWrap config error: environment lookup keys and string arguments must be quoted.\n",
+            .{},
+        ),
         error.ExpectedCloseBracket => std.debug.print(
-            "ExeWrap config error: list index or slice is missing a closing ].\n",
+            "ExeWrap config error: bracket lookup, list index, or slice is missing a closing ].\n",
             .{},
         ),
         error.ExpectedColonOrCloseBracket => std.debug.print(
