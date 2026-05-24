@@ -286,8 +286,8 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
     try validateTopLevelShape(root);
 
     const strictness = template_expr.Strictness{
-        .error_on_missing_env = getBool(root, "error_on_missing_env") orelse false,
-        .error_on_arg_out_of_bounds = getBool(root, "error_on_arg_out_of_bounds") orelse false,
+        .error_on_missing_env = (try getBool(root, "error_on_missing_env", error.ErrorOnMissingEnvMustBeBoolean)) orelse false,
+        .error_on_arg_out_of_bounds = (try getBool(root, "error_on_arg_out_of_bounds", error.ErrorOnArgOutOfBoundsMustBeBoolean)) orelse false,
     };
     var eval_ctx = template_expr.EvalContext{
         .allocator = allocator,
@@ -297,7 +297,7 @@ pub fn parseConfigWithOptions(allocator: std.mem.Allocator, bytes: []const u8, o
         .strictness = strictness,
     };
 
-    const kill_children_on_exit = getBool(root, "kill_children_on_exit") orelse false;
+    const kill_children_on_exit = (try getBool(root, "kill_children_on_exit", error.KillChildrenOnExitMustBeBoolean)) orelse false;
 
     const env = try parseEnv(allocator, root.get("env"), &eval_ctx, scanned.sentinels);
 
@@ -654,11 +654,11 @@ fn metadataFromRuntime(paths: RuntimePaths, args0: []const u8) template_expr.Met
     };
 }
 
-fn getBool(object: std.json.ObjectMap, key: []const u8) ?bool {
+fn getBool(object: std.json.ObjectMap, key: []const u8, type_error: anyerror) !?bool {
     const value = object.get(key) orelse return null;
     return switch (value) {
         .bool => |b| b,
-        else => null,
+        else => type_error,
     };
 }
 
@@ -1148,6 +1148,38 @@ test "strict missing environment and arg index failures are reported" {
         allocator,
         "{\"error_on_arg_out_of_bounds\":true,\"command\":[\"@{args:2}\"]}",
         .{ .paths = paths, .args = &args, .env_map = &env_map },
+    ));
+}
+
+test "boolean config fields reject non-boolean values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\apps\\demo\\demo.exe",
+        .exe_dir = "C:\\apps\\demo",
+        .exe_name = "demo.exe",
+        .exe_stem = "demo",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+
+    try std.testing.expectError(error.KillChildrenOnExitMustBeBoolean, parseConfigWithOptions(
+        allocator,
+        "{\"kill_children_on_exit\":\"true\",\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.ErrorOnMissingEnvMustBeBoolean, parseConfigWithOptions(
+        allocator,
+        "{\"error_on_missing_env\":\"true\",\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
+    ));
+
+    try std.testing.expectError(error.ErrorOnArgOutOfBoundsMustBeBoolean, parseConfigWithOptions(
+        allocator,
+        "{\"error_on_arg_out_of_bounds\":\"true\",\"command\":[\"cmd.exe\"]}",
+        .{ .paths = paths, .env_map = &env_map },
     ));
 }
 
