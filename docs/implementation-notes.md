@@ -271,9 +271,8 @@ parsing so malformed text cannot be interpreted differently by later layers.
 
 The implementation intentionally keeps several items small or explicit:
 
-- Common user directories are currently derived from `USERPROFILE` plus the
-  conventional child name (`Documents`, `Downloads`, `Desktop`). The current
-  implementation does not call a platform known-folder API.
+- Common user directories use the Windows known-folder API. They resolve to an
+  empty string when the current user profile folder cannot be resolved.
 - The scanner records source byte ranges for templates, but JSON parse errors
   are not yet remapped back to original template-source offsets.
 - Object-order environment evaluation depends on the current Zig JSON object

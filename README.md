@@ -226,9 +226,9 @@ why raw array entries such as `@{args}` and normal quotes in expressions such as
 | `programdata_dir` | ProgramData directory. |
 | `program_files_dir` | Program Files directory. |
 | `program_files_x86_dir` | Program Files (x86) directory. |
-| `documents_dir` | `Documents` under the user profile directory, when a profile is available. |
-| `downloads_dir` | `Downloads` under the user profile directory, when a profile is available. |
-| `desktop_dir` | `Desktop` under the user profile directory, when a profile is available. |
+| `documents_dir` | Current user's Documents known folder, when available. |
+| `downloads_dir` | Current user's Downloads known folder, when available. |
+| `desktop_dir` | Current user's Desktop known folder, when available. |
 | `os` | Zig OS tag, for example `windows`. |
 | `arch` | Zig CPU architecture tag, for example `x86_64`. |
 | `dir_sep` | Directory separator. |
