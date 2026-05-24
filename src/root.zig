@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const windows = std.os.windows;
 
 pub const template_scan = @import("template_scan.zig");
 pub const template_expr = @import("template_expr.zig");
@@ -35,6 +37,15 @@ pub const RuntimePaths = struct {
     desktop_dir: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator, exe_path: []const u8) !RuntimePaths {
+        const known_user_dirs = try KnownUserDirs.init(allocator);
+        return initWithKnownUserDirs(allocator, exe_path, known_user_dirs);
+    }
+
+    fn initWithKnownUserDirs(
+        allocator: std.mem.Allocator,
+        exe_path: []const u8,
+        known_user_dirs: KnownUserDirs,
+    ) !RuntimePaths {
         const launch_cwd = try std.process.getCwdAlloc(allocator);
         const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
         const exe_filename = std.fs.path.basename(exe_path);
@@ -59,12 +70,69 @@ pub const RuntimePaths = struct {
             .programdata_dir = try getEnvVarOrEmpty(allocator, "ProgramData"),
             .program_files_dir = try getEnvVarOrEmpty(allocator, "ProgramFiles"),
             .program_files_x86_dir = try getEnvVarOrEmpty(allocator, "ProgramFiles(x86)"),
-            .documents_dir = try joinKnownHomeDir(allocator, home_dir, "Documents"),
-            .downloads_dir = try joinKnownHomeDir(allocator, home_dir, "Downloads"),
-            .desktop_dir = try joinKnownHomeDir(allocator, home_dir, "Desktop"),
+            .documents_dir = known_user_dirs.documents,
+            .downloads_dir = known_user_dirs.downloads,
+            .desktop_dir = known_user_dirs.desktop,
         };
     }
 };
+
+const KnownUserDirs = struct {
+    documents: []const u8 = "",
+    downloads: []const u8 = "",
+    desktop: []const u8 = "",
+
+    fn init(allocator: std.mem.Allocator) !KnownUserDirs {
+        return .{
+            .documents = try knownUserFolderOrEmpty(allocator, .documents),
+            .downloads = try knownUserFolderOrEmpty(allocator, .downloads),
+            .desktop = try knownUserFolderOrEmpty(allocator, .desktop),
+        };
+    }
+};
+
+const KnownUserFolder = enum {
+    documents,
+    downloads,
+    desktop,
+};
+
+const GUID = extern struct {
+    Data1: u32,
+    Data2: u16,
+    Data3: u16,
+    Data4: [8]u8,
+};
+
+const FOLDERID_Documents = GUID{
+    .Data1 = 0xFDD39AD0,
+    .Data2 = 0x238F,
+    .Data3 = 0x46AF,
+    .Data4 = .{ 0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7 },
+};
+
+const FOLDERID_Downloads = GUID{
+    .Data1 = 0x374DE290,
+    .Data2 = 0x123F,
+    .Data3 = 0x4565,
+    .Data4 = .{ 0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B },
+};
+
+const FOLDERID_Desktop = GUID{
+    .Data1 = 0xB4BFCC3A,
+    .Data2 = 0xDB2C,
+    .Data3 = 0x424C,
+    .Data4 = .{ 0xB0, 0x29, 0x7F, 0xE9, 0x9A, 0x87, 0xC6, 0x41 },
+};
+
+extern "shell32" fn SHGetKnownFolderPath(
+    rfid: *const GUID,
+    dwFlags: windows.DWORD,
+    hToken: ?windows.HANDLE,
+    ppszPath: *?[*:0]u16,
+) callconv(.winapi) i32;
+
+extern "ole32" fn CoTaskMemFree(pv: ?*anyopaque) callconv(.winapi) void;
 
 pub const EnvVar = struct {
     name: []const u8,
@@ -669,9 +737,23 @@ fn getEnvVarOrEmpty(allocator: std.mem.Allocator, name: []const u8) ![]const u8 
     };
 }
 
-fn joinKnownHomeDir(allocator: std.mem.Allocator, home_dir: []const u8, child: []const u8) ![]const u8 {
-    if (home_dir.len == 0) return "";
-    return std.fs.path.join(allocator, &.{ home_dir, child });
+fn knownUserFolderOrEmpty(allocator: std.mem.Allocator, folder: KnownUserFolder) ![]const u8 {
+    if (builtin.os.tag != .windows) return "";
+
+    const folder_id = switch (folder) {
+        .documents => FOLDERID_Documents,
+        .downloads => FOLDERID_Downloads,
+        .desktop => FOLDERID_Desktop,
+    };
+
+    var raw_path: ?[*:0]u16 = null;
+    const hr = SHGetKnownFolderPath(&folder_id, 0, null, &raw_path);
+    if (hr < 0) return "";
+
+    const path = raw_path orelse return "";
+    defer CoTaskMemFree(@as(?*anyopaque, @ptrCast(path)));
+
+    return std.unicode.utf16LeToUtf8Alloc(allocator, std.mem.span(path));
 }
 
 fn pathRoot(path: []const u8) []const u8 {
@@ -708,6 +790,11 @@ fn writeMinimalPeHeaderWithSection(bytes: []u8, magic: u16, subsystem: u16, raw_
     const section_offset = 0x80 + 24 + 0xf0;
     std.mem.writeInt(u32, bytes[section_offset + 16 ..][0..@sizeOf(u32)], raw_size, .little);
     std.mem.writeInt(u32, bytes[section_offset + 20 ..][0..@sizeOf(u32)], raw_pointer, .little);
+}
+
+fn expectEmptyOrAbsolutePath(path: []const u8) !void {
+    if (path.len == 0) return;
+    try std.testing.expect(std.fs.path.isAbsolute(path));
 }
 
 test "normalizes UTF-8 BOM before parsing config" {
@@ -870,6 +957,37 @@ test "embedded config scans PE overlay after image data" {
     const range = embeddedConfigRangeFromBytes(&bytes).?;
     try std.testing.expectEqual(@as(usize, 0x300), range.marker_start);
     try std.testing.expectEqualStrings(config_text, try embeddedConfigFromBytes(&bytes));
+}
+
+test "runtime paths keep resolved known user folders instead of profile suffix guesses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const paths = try RuntimePaths.initWithKnownUserDirs(
+        arena.allocator(),
+        "C:\\apps\\demo\\demo.exe",
+        .{
+            .documents = "D:\\Moved Documents",
+            .downloads = "E:\\Downloads Here",
+            .desktop = "F:\\Desktop Elsewhere",
+        },
+    );
+
+    try std.testing.expectEqualStrings("D:\\Moved Documents", paths.documents_dir);
+    try std.testing.expectEqualStrings("E:\\Downloads Here", paths.downloads_dir);
+    try std.testing.expectEqualStrings("F:\\Desktop Elsewhere", paths.desktop_dir);
+}
+
+test "known user folder lookup returns absolute Windows paths when available" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const dirs = try KnownUserDirs.init(arena.allocator());
+    try expectEmptyOrAbsolutePath(dirs.documents);
+    try expectEmptyOrAbsolutePath(dirs.downloads);
+    try expectEmptyOrAbsolutePath(dirs.desktop);
 }
 
 test "parse config expands paths" {
