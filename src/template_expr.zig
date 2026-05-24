@@ -53,6 +53,10 @@ pub const TokenTag = enum {
     colon,
     open_paren,
     close_paren,
+    open_bracket,
+    close_bracket,
+    plus,
+    minus,
     eof,
 };
 
@@ -68,7 +72,6 @@ pub const Source = union(enum) {
     base: []const u8,
     env: []const u8,
     args_all,
-    args_index: usize,
 };
 
 pub const Argument = union(enum) {
@@ -82,8 +85,25 @@ pub const NamedTransform = struct {
     argument: ?Argument = null,
 };
 
+pub const IndexBase = union(enum) {
+    integer: i64,
+    end,
+};
+
+pub const IndexExpression = struct {
+    base: IndexBase,
+    offset: i64 = 0,
+};
+
+pub const SliceExpression = struct {
+    start: IndexExpression,
+    step: ?IndexExpression = null,
+    stop: IndexExpression,
+};
+
 pub const Transform = union(enum) {
-    index: usize,
+    index: IndexExpression,
+    slice: SliceExpression,
     named: NamedTransform,
 };
 
@@ -151,6 +171,22 @@ const Tokenizer = struct {
             ')' => {
                 self.index += 1;
                 return .{ .tag = .close_paren, .lexeme = self.input[start..self.index], .offset = start };
+            },
+            '[' => {
+                self.index += 1;
+                return .{ .tag = .open_bracket, .lexeme = self.input[start..self.index], .offset = start };
+            },
+            ']' => {
+                self.index += 1;
+                return .{ .tag = .close_bracket, .lexeme = self.input[start..self.index], .offset = start };
+            },
+            '+' => {
+                self.index += 1;
+                return .{ .tag = .plus, .lexeme = self.input[start..self.index], .offset = start };
+            },
+            '-' => {
+                self.index += 1;
+                return .{ .tag = .minus, .lexeme = self.input[start..self.index], .offset = start };
             },
             '"' => return try self.readString(allocator),
             '0'...'9' => return try self.readInteger(),
@@ -272,9 +308,15 @@ const Parser = struct {
         var transforms: std.ArrayList(Transform) = .empty;
         errdefer transforms.deinit(self.allocator);
 
-        while (self.current().tag == .colon) {
-            _ = self.advance();
-            try transforms.append(self.allocator, try self.parseTransform());
+        while (true) {
+            switch (self.current().tag) {
+                .colon => {
+                    _ = self.advance();
+                    try transforms.append(self.allocator, try self.parseTransform());
+                },
+                .open_bracket => try transforms.append(self.allocator, try self.parseListSelector()),
+                else => break,
+            }
         }
 
         return .{
@@ -289,19 +331,15 @@ const Parser = struct {
         _ = self.advance();
 
         if (std.mem.eql(u8, token.lexeme, "env")) {
-            try self.expect(.colon);
+            try self.expect(.open_bracket);
             const name = self.current();
             if (name.tag != .string) return error.ExpectedString;
             _ = self.advance();
+            try self.expect(.close_bracket);
             return .{ .env = name.string };
         }
 
         if (std.mem.eql(u8, token.lexeme, "args")) {
-            if (self.current().tag == .colon and self.peek(1).tag == .integer) {
-                _ = self.advance();
-                const index = self.advance();
-                return .{ .args_index = index.integer };
-            }
             return .args_all;
         }
 
@@ -311,10 +349,6 @@ const Parser = struct {
     fn parseTransform(self: *Parser) anyerror!Transform {
         const token = self.current();
         switch (token.tag) {
-            .integer => {
-                _ = self.advance();
-                return .{ .index = token.integer };
-            },
             .identifier => {
                 _ = self.advance();
                 var argument: ?Argument = null;
@@ -327,6 +361,77 @@ const Parser = struct {
             },
             else => return error.ExpectedIdentifier,
         }
+    }
+
+    fn parseListSelector(self: *Parser) anyerror!Transform {
+        try self.expect(.open_bracket);
+        const first = try self.parseIndexExpression();
+
+        if (self.current().tag == .close_bracket) {
+            _ = self.advance();
+            return .{ .index = first };
+        }
+
+        if (self.current().tag != .colon) return error.ExpectedColonOrCloseBracket;
+        _ = self.advance();
+        const second = try self.parseIndexExpression();
+
+        if (self.current().tag == .close_bracket) {
+            _ = self.advance();
+            return .{ .slice = .{
+                .start = first,
+                .stop = second,
+            } };
+        }
+
+        if (self.current().tag != .colon) return error.ExpectedColonOrCloseBracket;
+        _ = self.advance();
+        const third = try self.parseIndexExpression();
+        try self.expect(.close_bracket);
+        return .{ .slice = .{
+            .start = first,
+            .step = second,
+            .stop = third,
+        } };
+    }
+
+    fn parseIndexExpression(self: *Parser) anyerror!IndexExpression {
+        var leading_sign: i64 = 1;
+        if (self.current().tag == .plus or self.current().tag == .minus) {
+            leading_sign = if (self.current().tag == .minus) -1 else 1;
+            _ = self.advance();
+        }
+
+        const token = self.current();
+        var expression: IndexExpression = undefined;
+        switch (token.tag) {
+            .integer => {
+                _ = self.advance();
+                const value = try tokenIntegerAsI64(token);
+                expression = .{ .base = .{ .integer = leading_sign * value } };
+            },
+            .identifier => {
+                if (leading_sign < 0 or !std.mem.eql(u8, token.lexeme, "end")) return error.ExpectedIndexExpression;
+                _ = self.advance();
+                expression = .{ .base = .end };
+            },
+            else => return error.ExpectedIndexExpression,
+        }
+
+        while (self.current().tag == .plus or self.current().tag == .minus) {
+            const sign: i64 = if (self.current().tag == .minus) -1 else 1;
+            _ = self.advance();
+            const offset = self.current();
+            if (offset.tag != .integer) return error.ExpectedInteger;
+            _ = self.advance();
+            expression.offset = std.math.add(
+                i64,
+                expression.offset,
+                sign * (try tokenIntegerAsI64(offset)),
+            ) catch return error.IndexExpressionOverflow;
+        }
+
+        return expression;
     }
 
     fn parseArgument(self: *Parser) anyerror!Argument {
@@ -358,6 +463,10 @@ const Parser = struct {
                 .colon => error.ExpectedColon,
                 .open_paren => error.ExpectedOpenParen,
                 .close_paren => error.ExpectedCloseParen,
+                .open_bracket => error.ExpectedOpenBracket,
+                .close_bracket => error.ExpectedCloseBracket,
+                .plus => error.ExpectedPlus,
+                .minus => error.ExpectedMinus,
                 .eof => error.ExpectedEndOfExpression,
             };
         }
@@ -371,12 +480,15 @@ const Parser = struct {
     }
 };
 
+fn tokenIntegerAsI64(token: Token) !i64 {
+    return std.math.cast(i64, token.integer) orelse error.IntegerOutOfRange;
+}
+
 fn evaluateSource(ctx: *EvalContext, source: Source) anyerror!Value {
     return switch (source) {
         .base => |name| .{ .string = try resolveBase(ctx, name) },
         .env => |name| .{ .string = try resolveEnv(ctx, name) },
         .args_all => .{ .list = try ctx.allocator.dupe([]const u8, ctx.args) },
-        .args_index => |index| try resolveArgIndex(ctx, ctx.args, index),
     };
 }
 
@@ -416,18 +528,66 @@ fn resolveEnv(ctx: *EvalContext, name: []const u8) ![]const u8 {
     };
 }
 
-fn resolveArgIndex(ctx: *EvalContext, args: []const []const u8, index: usize) !Value {
-    if (index == 0 or index > args.len) {
+fn resolveListIndex(ctx: *EvalContext, items: []const []const u8, expression: IndexExpression) !Value {
+    const index = try evaluateIndexExpression(expression, items.len);
+    if (index <= 0) return error.IndexOutOfBounds;
+    if (index > @as(i64, @intCast(items.len))) {
         if (ctx.strictness.error_on_arg_out_of_bounds) return error.ArgumentOutOfBounds;
         return .{ .string = "" };
     }
-    return .{ .string = args[index - 1] };
+    return .{ .string = items[@as(usize, @intCast(index - 1))] };
+}
+
+fn resolveListSlice(ctx: *EvalContext, items: []const []const u8, slice: SliceExpression) !Value {
+    const default_step = IndexExpression{ .base = .{ .integer = 1 } };
+    const step = try evaluateIndexExpression(slice.step orelse default_step, items.len);
+    if (step == 0) return error.ZeroSliceStep;
+    if (items.len == 0) return .{ .list = &.{} };
+
+    const len: i64 = @intCast(items.len);
+    const start = try evaluateIndexExpression(slice.start, items.len);
+    const stop = try evaluateIndexExpression(slice.stop, items.len);
+
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
+
+    if (step > 0) {
+        var i: i64 = @max(start, 1);
+        const last: i64 = @min(stop, len);
+        while (i <= last) {
+            try out.append(ctx.allocator, items[@as(usize, @intCast(i - 1))]);
+            if (step > last - i) break;
+            i += step;
+        }
+    } else {
+        var i: i64 = @min(start, len);
+        const last: i64 = @max(stop, 1);
+        while (i >= last) {
+            try out.append(ctx.allocator, items[@as(usize, @intCast(i - 1))]);
+            if (step < last - i) break;
+            i += step;
+        }
+    }
+
+    return .{ .list = try out.toOwnedSlice(ctx.allocator) };
+}
+
+fn evaluateIndexExpression(expression: IndexExpression, item_count: usize) !i64 {
+    const base_value: i64 = switch (expression.base) {
+        .integer => |value| value,
+        .end => @intCast(item_count),
+    };
+    return std.math.add(i64, base_value, expression.offset) catch error.IndexExpressionOverflow;
 }
 
 fn applyTransform(ctx: *EvalContext, value: Value, transform: Transform) anyerror!Value {
     return switch (transform) {
-        .index => |index| switch (value) {
-            .list => |items| try resolveArgIndex(ctx, items, index),
+        .index => |expression| switch (value) {
+            .list => |items| try resolveListIndex(ctx, items, expression),
+            else => error.WrongTransformType,
+        },
+        .slice => |slice| switch (value) {
+            .list => |items| try resolveListSlice(ctx, items, slice),
             else => error.WrongTransformType,
         },
         .named => |named| try applyNamedTransform(ctx, value, named),
@@ -485,11 +645,6 @@ fn applyNamedTransform(ctx: *EvalContext, value: Value, transform: NamedTransfor
         return .{ .string = try uniqueEnv(ctx, input) };
     }
 
-    if (isListTransform(name)) {
-        const items = try expectList(value);
-        return try applyListTransform(ctx, items, name, transform.argument);
-    }
-
     return error.UnknownTransform;
 }
 
@@ -508,50 +663,6 @@ fn applyStringLikeNoArg(ctx: *EvalContext, input: []const u8, name: []const u8) 
     if (std.mem.eql(u8, name, "upper")) return asciiUpper(ctx, input);
     if (std.mem.eql(u8, name, "trim")) return std.mem.trim(u8, input, " \t\r\n");
     if (std.mem.eql(u8, name, "json")) return jsonEscape(ctx, input);
-    return error.UnknownTransform;
-}
-
-fn applyListTransform(
-    ctx: *EvalContext,
-    items: []const []const u8,
-    name: []const u8,
-    argument: ?Argument,
-) anyerror!Value {
-    if (std.mem.eql(u8, name, "last") and argument == null) {
-        return try resolveArgIndex(ctx, items, items.len);
-    }
-
-    const count = if (argument) |arg|
-        try argumentInteger(ctx, arg)
-    else
-        return error.MissingTransformArgument;
-
-    if (std.mem.eql(u8, name, "from")) {
-        if (count <= 1) return .{ .list = try ctx.allocator.dupe([]const u8, items) };
-        if (count > items.len) return .{ .list = &.{} };
-        return .{ .list = try ctx.allocator.dupe([]const u8, items[count - 1 ..]) };
-    }
-
-    if (std.mem.eql(u8, name, "take")) {
-        const end = @min(count, items.len);
-        return .{ .list = try ctx.allocator.dupe([]const u8, items[0..end]) };
-    }
-
-    if (std.mem.eql(u8, name, "drop")) {
-        const start = @min(count, items.len);
-        return .{ .list = try ctx.allocator.dupe([]const u8, items[start..]) };
-    }
-
-    if (std.mem.eql(u8, name, "last")) {
-        const start = items.len - @min(count, items.len);
-        return .{ .list = try ctx.allocator.dupe([]const u8, items[start..]) };
-    }
-
-    if (std.mem.eql(u8, name, "drop_last")) {
-        const end = items.len - @min(count, items.len);
-        return .{ .list = try ctx.allocator.dupe([]const u8, items[0..end]) };
-    }
-
     return error.UnknownTransform;
 }
 
@@ -617,20 +728,6 @@ fn isNoArgStringTransform(name: []const u8) bool {
         "upper",
         "trim",
         "json",
-    };
-    for (names) |candidate| {
-        if (std.mem.eql(u8, name, candidate)) return true;
-    }
-    return false;
-}
-
-fn isListTransform(name: []const u8) bool {
-    const names = [_][]const u8{
-        "from",
-        "take",
-        "drop",
-        "last",
-        "drop_last",
     };
     for (names) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
@@ -1029,16 +1126,18 @@ test "tokenizer handles identifiers strings integers and punctuation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const tokens = try tokenize(allocator, "env:\"PA\\\"TH\":prepend_env(exe_dir:parent:join(\"python\")):1");
+    const tokens = try tokenize(allocator, "env[\"PA\\\"TH\"]:prepend_env(exe_dir:parent:join(\"python\")):1");
 
     try std.testing.expectEqual(TokenTag.identifier, tokens[0].tag);
     try std.testing.expectEqualStrings("env", tokens[0].lexeme);
-    try std.testing.expectEqual(TokenTag.colon, tokens[1].tag);
+    try std.testing.expectEqual(TokenTag.open_bracket, tokens[1].tag);
     try std.testing.expectEqual(TokenTag.string, tokens[2].tag);
     try std.testing.expectEqualStrings("PA\"TH", tokens[2].string);
-    try std.testing.expectEqual(TokenTag.identifier, tokens[4].tag);
-    try std.testing.expectEqualStrings("prepend_env", tokens[4].lexeme);
-    try std.testing.expectEqual(TokenTag.open_paren, tokens[5].tag);
+    try std.testing.expectEqual(TokenTag.close_bracket, tokens[3].tag);
+    try std.testing.expectEqual(TokenTag.colon, tokens[4].tag);
+    try std.testing.expectEqual(TokenTag.identifier, tokens[5].tag);
+    try std.testing.expectEqualStrings("prepend_env", tokens[5].lexeme);
+    try std.testing.expectEqual(TokenTag.open_paren, tokens[6].tag);
     try std.testing.expectEqual(TokenTag.integer, tokens[tokens.len - 2].tag);
     try std.testing.expectEqual(@as(usize, 1), tokens[tokens.len - 2].integer);
     try std.testing.expectEqual(TokenTag.eof, tokens[tokens.len - 1].tag);
@@ -1048,9 +1147,10 @@ test "parser builds env lookup with nested transform argument" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const expression = try parse(allocator, "env:\"PATH\":prepend_env(exe_dir:parent:join(\"python\"))");
+    const expression = try parse(allocator, "env[\"PATH\"]:prepend_env(exe_dir:parent:join(\"python\"))");
 
     try std.testing.expectEqual(Source.env, std.meta.activeTag(expression.source));
+    try std.testing.expectEqualStrings("PATH", expression.source.env);
     try std.testing.expectEqual(@as(usize, 1), expression.transforms.len);
     const named = expression.transforms[0].named;
     try std.testing.expectEqualStrings("prepend_env", named.name);
@@ -1087,8 +1187,8 @@ test "evaluates string transforms and JSON escaping" {
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("pre-mixed \"case\"-post", try evaluate("env:\"NAME\":trim:lower:prefix(\"pre-\"):suffix(\"-post\")", &ctx));
-    try expectStringValue("Line\\n\\\"quoted\\\"", try evaluate("env:\"TEXT\":prefix(\"Line\\n\\\"quoted\\\"\"):json", &ctx));
+    try expectStringValue("pre-mixed \"case\"-post", try evaluate("env[\"NAME\"]:trim:lower:prefix(\"pre-\"):suffix(\"-post\")", &ctx));
+    try expectStringValue("Line\\n\\\"quoted\\\"", try evaluate("env[\"TEXT\"]:prefix(\"Line\\n\\\"quoted\\\"\"):json", &ctx));
 }
 
 test "environment lookups default empty and can be strict" {
@@ -1100,33 +1200,49 @@ test "environment lookups default empty and can be strict" {
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("", try evaluate("env:\"MISSING\"", &ctx));
+    try expectStringValue("", try evaluate("env[\"MISSING\"]", &ctx));
     ctx.strictness.error_on_missing_env = true;
-    try std.testing.expectError(error.MissingEnvironmentVariable, evaluate("env:\"MISSING\"", &ctx));
+    try std.testing.expectError(error.MissingEnvironmentVariable, evaluate("env[\"MISSING\"]", &ctx));
 }
 
-test "argument lookup and slicing are one based and forgiving" {
+test "argument indexing and slicing use Julia-style brackets" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     var env = std.process.EnvMap.init(allocator);
     defer env.deinit();
-    const args = [_][]const u8{ "alpha", "C:\\Input\\demo.txt", "gamma", "delta" };
+    const args = [_][]const u8{ "10", "20", "30", "40", "50", "60" };
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("alpha", try evaluate("args:1", &ctx));
-    try expectStringValue("demo.txt", try evaluate("args:2:filename", &ctx));
-    try expectListValue(&.{ "C:\\Input\\demo.txt", "gamma", "delta" }, try evaluate("args:from(2)", &ctx));
-    try expectListValue(&.{ "alpha", "C:\\Input\\demo.txt" }, try evaluate("args:take(2)", &ctx));
-    try expectListValue(&.{ "gamma", "delta" }, try evaluate("args:drop(2)", &ctx));
-    try expectStringValue("delta", try evaluate("args:last", &ctx));
-    try expectListValue(&.{ "gamma", "delta" }, try evaluate("args:last(2)", &ctx));
-    try expectStringValue("gamma", try evaluate("args:last(2):1", &ctx));
-    try expectListValue(&.{ "alpha", "C:\\Input\\demo.txt", "gamma" }, try evaluate("args:drop_last(1)", &ctx));
-    try expectListValue(&.{}, try evaluate("args:from(999999)", &ctx));
-    try expectStringValue("", try evaluate("args:10", &ctx));
+    try expectStringValue("10", try evaluate("args[1]", &ctx));
+    try expectStringValue("60", try evaluate("args[end]", &ctx));
+    try expectStringValue("50", try evaluate("args[end-1]", &ctx));
+    try expectListValue(&.{ "10", "20", "30" }, try evaluate("args[1:3]", &ctx));
+    try expectListValue(&.{ "30", "40", "50", "60" }, try evaluate("args[3:end]", &ctx));
+    try expectListValue(&.{ "10", "20", "30", "40", "50" }, try evaluate("args[1:end-1]", &ctx));
+    try expectListValue(&.{ "20", "30", "40", "50" }, try evaluate("args[2:end-1]", &ctx));
+    try expectListValue(&.{ "10", "30", "50" }, try evaluate("args[1:2:end]", &ctx));
+    try expectListValue(&.{ "20", "40", "60" }, try evaluate("args[2:2:end]", &ctx));
+    try expectListValue(&.{ "10", "40" }, try evaluate("args[1:3:end]", &ctx));
+    try expectListValue(&.{ "60", "50", "40", "30", "20", "10" }, try evaluate("args[end:-1:1]", &ctx));
+    try expectListValue(&.{ "60", "40", "20" }, try evaluate("args[end:-2:1]", &ctx));
+    try expectListValue(&.{ "10", "20", "30", "40", "50", "60" }, try evaluate("args[1:999999]", &ctx));
+    try expectStringValue("", try evaluate("args[10]", &ctx));
+    try std.testing.expectError(error.IndexOutOfBounds, evaluate("args[0]", &ctx));
     ctx.strictness.error_on_arg_out_of_bounds = true;
-    try std.testing.expectError(error.ArgumentOutOfBounds, evaluate("args:10", &ctx));
+    try std.testing.expectError(error.ArgumentOutOfBounds, evaluate("args[10]", &ctx));
+}
+
+test "argument indexes can feed string transforms" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    const args = [_][]const u8{ "alpha", "C:\\Input\\demo.txt" };
+    var ctx = testContext(allocator, &env, args[0..]);
+
+    try expectStringValue("demo.txt", try evaluate("args[2]:filename", &ctx));
 }
 
 test "environment list transforms preserve order and avoid empty-list separators" {
@@ -1140,12 +1256,12 @@ test "environment list transforms preserve order and avoid empty-list separators
     const args = [_][]const u8{};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try expectStringValue("C:\\Bundle\\Python;C:\\A;;C:\\B;C:\\A", try evaluate("env:\"PATH\":prepend_env(exe_dir:parent:join(\"Python\"))", &ctx));
-    try expectStringValue("C:\\A;;C:\\B;C:\\A;C:\\Tools", try evaluate("env:\"PATH\":append_env(\"C:\\\\Tools\")", &ctx));
-    try expectStringValue("C:\\A;;C:\\A", try evaluate("env:\"PATH\":remove_env(\"C:\\\\B\")", &ctx));
-    try expectStringValue("C:\\A;;C:\\B", try evaluate("env:\"PATH\":unique_env", &ctx));
-    try expectStringValue("C:\\Only", try evaluate("env:\"EMPTY\":prepend_env(\"C:\\\\Only\")", &ctx));
-    try expectStringValue("", try evaluate("env:\"EMPTY\":append_env(\"\")", &ctx));
+    try expectStringValue("C:\\Bundle\\Python;C:\\A;;C:\\B;C:\\A", try evaluate("env[\"PATH\"]:prepend_env(exe_dir:parent:join(\"Python\"))", &ctx));
+    try expectStringValue("C:\\A;;C:\\B;C:\\A;C:\\Tools", try evaluate("env[\"PATH\"]:append_env(\"C:\\\\Tools\")", &ctx));
+    try expectStringValue("C:\\A;;C:\\A", try evaluate("env[\"PATH\"]:remove_env(\"C:\\\\B\")", &ctx));
+    try expectStringValue("C:\\A;;C:\\B", try evaluate("env[\"PATH\"]:unique_env", &ctx));
+    try expectStringValue("C:\\Only", try evaluate("env[\"EMPTY\"]:prepend_env(\"C:\\\\Only\")", &ctx));
+    try expectStringValue("", try evaluate("env[\"EMPTY\"]:append_env(\"\")", &ctx));
 }
 
 test "path and env helpers release temporary containers" {
@@ -1176,12 +1292,19 @@ test "invalid syntax unknown names and wrong types fail explicitly" {
     const args = [_][]const u8{"alpha"};
     var ctx = testContext(allocator, &env, args[0..]);
 
-    try std.testing.expectError(error.ExpectedString, evaluate("env:PATH", &ctx));
+    try std.testing.expectError(error.ExpectedOpenBracket, evaluate("env:PATH", &ctx));
+    try std.testing.expectError(error.ExpectedOpenBracket, evaluate("env:\"PATH\"", &ctx));
+    try std.testing.expectError(error.ExpectedString, evaluate("env[PATH]", &ctx));
+    try std.testing.expectError(error.ExpectedCloseBracket, evaluate("env[\"PATH\"", &ctx));
     try std.testing.expectError(error.ExpectedCloseParen, evaluate("exe_dir:join(\"python\"", &ctx));
+    try std.testing.expectError(error.ExpectedIndexExpression, evaluate("args[]", &ctx));
+    try std.testing.expectError(error.ExpectedIndexExpression, evaluate("args[begin]", &ctx));
+    try std.testing.expectError(error.ZeroSliceStep, evaluate("args[1:0:end]", &ctx));
     try std.testing.expectError(error.UnknownBase, evaluate("missing_base", &ctx));
     try std.testing.expectError(error.UnknownTransform, evaluate("exe_dir:no_such_transform", &ctx));
     try std.testing.expectError(error.WrongTransformType, evaluate("args:parent", &ctx));
-    try std.testing.expectError(error.WrongTransformType, evaluate("exe_dir:from(2)", &ctx));
+    try std.testing.expectError(error.UnknownTransform, evaluate("exe_dir:from(2)", &ctx));
+    try std.testing.expectError(error.WrongTransformType, evaluate("exe_dir[1]", &ctx));
     try std.testing.expectError(error.WrongTransformType, evaluate("exe_dir:join(args)", &ctx));
     try std.testing.expectError(error.UnexpectedTransformArgument, evaluate("exe_dir:parent(\"ignored\")", &ctx));
     try std.testing.expectError(error.MissingTransformArgument, evaluate("exe_dir:join", &ctx));

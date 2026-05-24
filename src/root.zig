@@ -1105,10 +1105,10 @@ test "environment values mutate in source order and command sees final env" {
     const json =
         \\{
         \\  "env": {
-        \\    "PATH": "@{env:"PATH":prepend_env(exe_dir:parent:join("python"))}",
-        \\    "PATH_AFTER": "@{env:"PATH"}"
+        \\    "PATH": "@{env["PATH"]:prepend_env(exe_dir:parent:join("python"))}",
+        \\    "PATH_AFTER": "@{env["PATH"]}"
         \\  },
-        \\  "command": ["@{env:"PATH_AFTER"}"]
+        \\  "command": ["@{env["PATH_AFTER"]}"]
         \\}
     ;
 
@@ -1139,14 +1139,14 @@ test "strict missing environment and arg index failures are reported" {
 
     try std.testing.expectError(error.MissingEnvironmentVariable, parseConfigWithOptions(
         allocator,
-        "{\"error_on_missing_env\":true,\"command\":[\"@{env:\"MISSING\"}\"]}",
+        "{\"error_on_missing_env\":true,\"command\":[\"@{env[\"MISSING\"]}\"]}",
         .{ .paths = paths, .env_map = &env_map },
     ));
 
     const args = [_][]const u8{"only-one"};
     try std.testing.expectError(error.ArgumentOutOfBounds, parseConfigWithOptions(
         allocator,
-        "{\"error_on_arg_out_of_bounds\":true,\"command\":[\"@{args:2}\"]}",
+        "{\"error_on_arg_out_of_bounds\":true,\"command\":[\"@{args[2]}\"]}",
         .{ .paths = paths, .args = &args, .env_map = &env_map },
     ));
 }
@@ -1232,7 +1232,7 @@ test "raw numeric command sentinels only accept list templates" {
 
     try std.testing.expectError(error.TemplateMustEvaluateToList, parseConfigWithOptions(
         allocator,
-        "{\"command\":[@{args:1}]}",
+        "{\"command\":[@{args[1]}]}",
         .{ .paths = paths, .args = &args, .env_map = &env_map },
     ));
 
@@ -1291,8 +1291,8 @@ test "string interpolation removes only inserted sentinel wrapper spaces" {
     const json =
         \\{
         \\  "command": [
-        \\    "pre@{args:1}post",
-        \\    "@{args:2} @{args:3}",
+        \\    "pre@{args[1]}post",
+        \\    "@{args[2]} @{args[3]}",
         \\    "@@{literal}"
         \\  ]
         \\}

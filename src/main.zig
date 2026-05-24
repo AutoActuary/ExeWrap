@@ -185,6 +185,38 @@ fn reportConfigError(err: anyerror) void {
             "ExeWrap config error: \"error_on_arg_out_of_bounds\" must be a boolean.\n",
             .{},
         ),
+        error.ExpectedIndexExpression => std.debug.print(
+            "ExeWrap config error: list indexes must be integers or end expressions such as args[1], args[end], or args[end-1].\n",
+            .{},
+        ),
+        error.ExpectedOpenBracket => std.debug.print(
+            "ExeWrap config error: environment lookups must use bracketed keys such as env[\"PATH\"].\n",
+            .{},
+        ),
+        error.ExpectedString => std.debug.print(
+            "ExeWrap config error: environment lookup keys and string arguments must be quoted.\n",
+            .{},
+        ),
+        error.ExpectedCloseBracket => std.debug.print(
+            "ExeWrap config error: bracket lookup, list index, or slice is missing a closing ].\n",
+            .{},
+        ),
+        error.ExpectedColonOrCloseBracket => std.debug.print(
+            "ExeWrap config error: list slices must use args[start:stop] or args[start:step:stop].\n",
+            .{},
+        ),
+        error.ZeroSliceStep => std.debug.print(
+            "ExeWrap config error: list slice step must not be zero.\n",
+            .{},
+        ),
+        error.IndexOutOfBounds => std.debug.print(
+            "ExeWrap config error: list indexes are 1-based; use args[1] for the first item and args[end] for the last item.\n",
+            .{},
+        ),
+        error.IndexExpressionOverflow, error.IntegerOutOfRange => std.debug.print(
+            "ExeWrap config error: list index expression is too large.\n",
+            .{},
+        ),
         else => std.debug.print("ExeWrap config error: {s}\n", .{@errorName(err)}),
     }
 }
