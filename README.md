@@ -103,7 +103,7 @@ code pages, and other non-utf-8 byte sequences are rejected.
 | `env` | No | ordered object | Environment edits applied before starting the child. Later values can read earlier edits. |
 | `kill_children_on_exit` | No | boolean | Kills the child process tree if the launcher exits or is killed. |
 | `error_on_missing_env` | No | boolean | Makes missing `@{env:"NAME"}` lookups fail. Otherwise missing env values resolve to an empty string. |
-| `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args:N}` lookups fail. Otherwise missing args resolve to an empty string. |
+| `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args[N]}` lookups fail. Otherwise missing args resolve to an empty string. |
 
 The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
 object keys. ExeWrap config is order-aware templated JSON-like input, not
@@ -195,7 +195,7 @@ entries. A list expression such as `@{args}` can appear as a raw array item:
     "cmd.exe",
     "/C",
     "echo first arg:",
-    @{args:take(1)}
+    @{args[1:1]}
   ]
 }
 ```
@@ -250,12 +250,12 @@ User argument lookup:
 
 ```text
 @{args}
-@{args:1}
-@{args:2:filename}
+@{args[1]}
+@{args[2]:filename}
 ```
 
 `args` are the arguments passed to the stamped launcher, excluding the launcher
-itself. Indexes are 1-based. `@{args:0}` is invalid; use `@{args0}` for the
+itself. Indexes are 1-based. `@{args[0]}` is invalid; use `@{args0}` for the
 launcher invocation string.
 
 Missing single-argument lookups resolve to an empty string unless
@@ -315,28 +315,31 @@ Example:
 }
 ```
 
-### Argument List Transforms
+### Argument Indexing And Slicing
 
-| Transform | Meaning |
+Argument indexing uses a Julia-style bracket subset on list-valued expressions.
+Indexes are 1-based. `end` means the last item, and `end-N` or `end+N` can be
+used for offsets. Slice ranges are inclusive.
+
+| Syntax | Meaning |
 | --- | --- |
-| `:N` | Select the Nth item from the current list. |
-| `from(N)` | Keep from item N onward. |
-| `take(N)` | Keep at most the first N items. |
-| `drop(N)` | Drop the first N items. |
-| `last` | Select the last item as a string. |
-| `last(N)` | Keep the last N items. |
-| `drop_last(N)` | Drop the last N items. |
+| `args[N]` | Select item N as a string. |
+| `args[end]` | Select the last item as a string. |
+| `args[start:stop]` | Keep items from start through stop. |
+| `args[start:step:stop]` | Keep items from start through stop using step. |
 
 Examples:
 
 ```text
 @{args}                    all user args as a list
-@{args:1}                  first user arg as a string
-@{args:from(2)}            all except the first user arg
-@{args:take(3)}            first three user args
-@{args:last}               last user arg as a string
-@{args:last(3):1}          third-last user arg
-@{args:drop_last(1)}       all except the last user arg
+@{args[1]}                 first user arg as a string
+@{args[end]}               last user arg as a string
+@{args[end-1]}             second-last user arg as a string
+@{args[1:3]}               first three user args
+@{args[3:end]}             from the third user arg onward
+@{args[1:end-1]}           all except the last user arg
+@{args[1:2:end]}           every second user arg from the first
+@{args[end:-1:1]}          all user args in reverse order
 ```
 
 List-valued expressions can only be inserted as complete command-array entries.
@@ -574,8 +577,8 @@ my-tool.exe alpha beta
 
 In that invocation:
 
-- `@{args:1}` is `alpha`.
-- `@{args:2}` is `beta`.
+- `@{args[1]}` is `alpha`.
+- `@{args[2]}` is `beta`.
 - `@{args0}` is the launcher invocation string.
 
 Set `error_on_arg_out_of_bounds` to `true` when missing arguments should fail

@@ -1146,7 +1146,7 @@ test "strict missing environment and arg index failures are reported" {
     const args = [_][]const u8{"only-one"};
     try std.testing.expectError(error.ArgumentOutOfBounds, parseConfigWithOptions(
         allocator,
-        "{\"error_on_arg_out_of_bounds\":true,\"command\":[\"@{args:2}\"]}",
+        "{\"error_on_arg_out_of_bounds\":true,\"command\":[\"@{args[2]}\"]}",
         .{ .paths = paths, .args = &args, .env_map = &env_map },
     ));
 }
@@ -1232,7 +1232,7 @@ test "raw numeric command sentinels only accept list templates" {
 
     try std.testing.expectError(error.TemplateMustEvaluateToList, parseConfigWithOptions(
         allocator,
-        "{\"command\":[@{args:1}]}",
+        "{\"command\":[@{args[1]}]}",
         .{ .paths = paths, .args = &args, .env_map = &env_map },
     ));
 
@@ -1291,8 +1291,8 @@ test "string interpolation removes only inserted sentinel wrapper spaces" {
     const json =
         \\{
         \\  "command": [
-        \\    "pre@{args:1}post",
-        \\    "@{args:2} @{args:3}",
+        \\    "pre@{args[1]}post",
+        \\    "@{args[2]} @{args[3]}",
         \\    "@@{literal}"
         \\  ]
         \\}

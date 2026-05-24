@@ -170,14 +170,16 @@ list of strings
 Typed values make these cases straightforward:
 
 - `@{args}` returns a list and can splice command-array entries.
-- `@{args:1}` returns one string.
-- `@{args:from(2):1}` first slices a list, then indexes the sliced list.
+- `@{args[1]}` returns one string.
+- `@{args[2:end][1]}` first slices a list, then indexes the sliced list.
 - `@{args:parent}` fails with a wrong-transform-type error.
 - `@{exe_dir:join(args)}` fails because `join` needs a string argument, not a
   list.
 
 Transforms intentionally take zero or one argument. There is no comma syntax,
-which keeps the grammar small and avoids hidden argument-order rules.
+which keeps the grammar small and avoids hidden argument-order rules. Indexing
+and slicing are parsed separately with brackets, so list selection does not
+reuse transform syntax.
 
 ## Environment Evaluation Order
 
@@ -207,7 +209,7 @@ rejected so ordered evaluation cannot become ambiguous.
 The default behavior favors portable optional values:
 
 - Missing `@{env:"NAME"}` resolves to an empty string.
-- Missing `@{args:N}` resolves to an empty string.
+- Missing `@{args[N]}` resolves to an empty string.
 - Argument list slices clamp to available args.
 
 The config can opt into errors with:
