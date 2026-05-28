@@ -1242,6 +1242,54 @@ test "environment values mutate in source order and command sees final env" {
     try std.testing.expectEqualStrings("C:\\Bundle\\python;C:\\Windows", config.command[0]);
 }
 
+test "args_as_json can populate env and single-quoted powershell source" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const paths = RuntimePaths{
+        .exe_path = "C:\\Bundle\\bin\\tool.exe",
+        .exe_dir = "C:\\Bundle\\bin",
+        .exe_name = "tool.exe",
+        .exe_stem = "tool",
+        .launch_cwd = "C:\\work",
+    };
+    var env_map = std.process.EnvMap.init(allocator);
+    const args = [_][]const u8{
+        "a'b",
+        "x\"y",
+        "dollar$backtick`",
+        "line\r\nnext",
+    };
+    const json =
+        \\{
+        \\  "env": {
+        \\    "__ARGS_AS_JSON__": "@{args_as_json}"
+        \\  },
+        \\  "command": [
+        \\    "powershell.exe",
+        \\    "-NoProfile",
+        \\    "-Command",
+        \\    "$ArgsJson='@{args_as_json}'; $ArgsList=$ArgsJson | ConvertFrom-Json"
+        \\  ]
+        \\}
+    ;
+
+    const config = try parseConfigWithOptions(allocator, json, .{
+        .paths = paths,
+        .args0 = "tool.exe",
+        .args = &args,
+        .env_map = &env_map,
+    });
+    const expected = "[\"a\\u0027b\",\"x\\u0022y\",\"dollar\\u0024backtick\\u0060\",\"line\\u000d\\u000anext\"]";
+
+    try std.testing.expectEqualStrings("__ARGS_AS_JSON__", config.env[0].name);
+    try std.testing.expectEqualStrings(expected, config.env[0].value);
+    try std.testing.expectEqualStrings(
+        "$ArgsJson='[\"a\\u0027b\",\"x\\u0022y\",\"dollar\\u0024backtick\\u0060\",\"line\\u000d\\u000anext\"]'; $ArgsList=$ArgsJson | ConvertFrom-Json",
+        config.command[3],
+    );
+}
+
 test "strict missing environment and arg index failures are reported" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

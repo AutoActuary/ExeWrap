@@ -218,6 +218,7 @@ why raw array entries such as `@{args}` and normal quotes in expressions such as
 | `exe_drive` | Windows drive or UNC share prefix for the executable path. |
 | `exe_root` | Root portion of the executable path. |
 | `args0` | Original launcher invocation argument when available. |
+| `args_as_json` | User arguments as one minified JSON array string. |
 | `cwd` | Directory from which the launcher was started. |
 | `temp_dir` | Operating system temp directory. |
 | `home_dir` | User profile directory. |
@@ -261,6 +262,34 @@ launcher invocation string.
 Missing single-argument lookups resolve to an empty string unless
 `error_on_arg_out_of_bounds` is `true`. List slices clamp to the available
 arguments.
+
+Use `@{args_as_json}` when a child process needs to receive the whole argument
+list through one string, for example an environment variable:
+
+```json
+{
+  "env": {
+    "__ARGS_AS_JSON__": "@{args_as_json}"
+  },
+  "command": [
+    "powershell.exe",
+    "-NoProfile",
+    "-Command",
+    "$ArgsList=$env:__ARGS_AS_JSON__ | ConvertFrom-Json; ..."
+  ]
+}
+```
+
+`args_as_json` is valid JSON text, not a list splice. Inside argument values it
+emits fixed `\uXXXX` escapes for JSON-required characters, apostrophes,
+backslashes, PowerShell `$` and backtick characters, control characters, and
+non-ASCII text. Ordinary spaces and printable metacharacters such as `%`, `!`,
+`^`, `&`, `|`, `<`, `>`, `(`, and `)` remain raw.
+
+That makes `$ArgsJson='@{args_as_json}'` safe from argument-data apostrophes in
+direct PowerShell source. It still cannot be pasted raw into a PowerShell
+double-quoted string because a JSON string array necessarily contains literal
+double quote delimiters. Prefer the `env` handoff above for nested shells.
 
 ### Path Transforms
 

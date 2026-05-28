@@ -171,6 +171,8 @@ Typed values make these cases straightforward:
 
 - `@{args}` returns a list and can splice command-array entries.
 - `@{args[1]}` returns one string.
+- `@{args_as_json}` returns one string containing all user args as minified
+  JSON.
 - `@{args[2:end][1]}` first slices a list, then indexes the sliced list.
 - `@{args:parent}` fails with a wrong-transform-type error.
 - `@{exe_dir:join(args)}` fails because `join` needs a string argument, not a
@@ -180,6 +182,14 @@ Transforms intentionally take zero or one argument. There is no comma syntax,
 which keeps the grammar small and avoids hidden argument-order rules. Indexing
 and slicing are parsed separately with brackets, so list selection does not
 reuse transform syntax.
+
+`args_as_json` is purpose-built for environment handoff and carefully quoted
+PowerShell source. Its encoder emits fixed-width lowercase `\uXXXX` escapes for
+JSON-required characters, apostrophes, backslashes, PowerShell `$` and backtick
+characters, control characters, and non-ASCII text. The output remains normal
+JSON text, so it still contains literal JSON syntax double quotes around string
+values; use environment variables or single-quoted PowerShell source rather
+than pasting it raw into a PowerShell double-quoted string.
 
 ## Environment Evaluation Order
 

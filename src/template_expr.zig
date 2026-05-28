@@ -494,6 +494,7 @@ fn evaluateSource(ctx: *EvalContext, source: Source) anyerror!Value {
 
 fn resolveBase(ctx: *EvalContext, name: []const u8) ![]const u8 {
     const metadata = ctx.metadata;
+    if (std.mem.eql(u8, name, "args_as_json")) return argsAsJson(ctx);
     if (std.mem.eql(u8, name, "exe_path")) return metadata.exe_path;
     if (std.mem.eql(u8, name, "exe_dir")) return metadata.exe_dir;
     if (std.mem.eql(u8, name, "exe_filename")) return metadata.exe_filename;
@@ -519,6 +520,51 @@ fn resolveBase(ctx: *EvalContext, name: []const u8) ![]const u8 {
     if (std.mem.eql(u8, name, "dir_sep")) return metadata.dir_sep;
     if (std.mem.eql(u8, name, "path_sep")) return metadata.path_sep;
     return error.UnknownBase;
+}
+
+fn argsAsJson(ctx: *EvalContext) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(ctx.allocator);
+
+    try out.append(ctx.allocator, '[');
+    for (ctx.args, 0..) |arg, index| {
+        if (index > 0) try out.append(ctx.allocator, ',');
+        try appendArgsJsonString(ctx, &out, arg);
+    }
+    try out.append(ctx.allocator, ']');
+
+    return try out.toOwnedSlice(ctx.allocator);
+}
+
+fn appendArgsJsonString(ctx: *EvalContext, out: *std.ArrayList(u8), input: []const u8) !void {
+    try out.append(ctx.allocator, '"');
+
+    var view = try std.unicode.Utf8View.init(input);
+    var it = view.iterator();
+    while (it.nextCodepoint()) |codepoint| {
+        if (codepoint <= 0x7f) {
+            const byte: u8 = @intCast(codepoint);
+            if (byte < 0x20 or byte == '"' or byte == '\'' or byte == '\\' or byte == '`' or byte == '$') {
+                try appendJsonUnicodeEscape(ctx, out, byte);
+            } else {
+                try out.append(ctx.allocator, byte);
+            }
+        } else if (codepoint <= 0xffff) {
+            try appendJsonUnicodeEscape(ctx, out, @intCast(codepoint));
+        } else {
+            const shifted = codepoint - 0x10000;
+            const high: u16 = @intCast(0xd800 + (shifted >> 10));
+            const low: u16 = @intCast(0xdc00 + (shifted & 0x3ff));
+            try appendJsonUnicodeEscape(ctx, out, high);
+            try appendJsonUnicodeEscape(ctx, out, low);
+        }
+    }
+
+    try out.append(ctx.allocator, '"');
+}
+
+fn appendJsonUnicodeEscape(ctx: *EvalContext, out: *std.ArrayList(u8), value: u16) !void {
+    try out.writer(ctx.allocator).print("\\u{x:0>4}", .{value});
 }
 
 fn resolveEnv(ctx: *EvalContext, name: []const u8) ![]const u8 {
@@ -1243,6 +1289,46 @@ test "argument indexes can feed string transforms" {
     var ctx = testContext(allocator, &env, args[0..]);
 
     try expectStringValue("demo.txt", try evaluate("args[2]:filename", &ctx));
+}
+
+test "args_as_json emits minimally escaped JSON array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    const args = [_][]const u8{
+        "alpha",
+        "two words",
+        "a'b",
+        "x\"y",
+        "a&b|c<d>e",
+        "percent%bang!caret^",
+        "line\r\nnext",
+        "tab\tnul\x00slash\\",
+        "dollar$backtick`semi;paren()",
+    };
+    var ctx = testContext(allocator, &env, args[0..]);
+
+    try expectStringValue(
+        "[\"alpha\",\"two words\",\"a\\u0027b\",\"x\\u0022y\",\"a&b|c<d>e\",\"percent%bang!caret^\",\"line\\u000d\\u000anext\",\"tab\\u0009nul\\u0000slash\\u005c\",\"dollar\\u0024backtick\\u0060semi;paren()\"]",
+        try evaluate("args_as_json", &ctx),
+    );
+}
+
+test "args_as_json escapes non ascii as unicode escapes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var env = std.process.EnvMap.init(allocator);
+    defer env.deinit();
+    const args = [_][]const u8{ "café", "music 𝄞" };
+    var ctx = testContext(allocator, &env, args[0..]);
+
+    try expectStringValue(
+        "[\"caf\\u00e9\",\"music \\ud834\\udd1e\"]",
+        try evaluate("args_as_json", &ctx),
+    );
 }
 
 test "environment list transforms preserve order and avoid empty-list separators" {
