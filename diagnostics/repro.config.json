@@ -1,0 +1,6 @@
+{
+  "command": [
+    "@{exe_dir:join(\"fake-python-x64.exe\")}",
+    @{args}
+  ]
+}

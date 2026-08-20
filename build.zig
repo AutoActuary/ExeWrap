@@ -7,14 +7,15 @@ pub fn build(b: *std.Build) void {
         "optimize",
         "Prioritize performance, safety, or binary size",
     ) orelse .ReleaseSmall;
+    const release_small = optimize == .ReleaseSmall;
 
     const mod = b.addModule("exewrap", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .strip = true,
+        .strip = release_small,
         .single_threaded = true,
-        .omit_frame_pointer = true,
+        .omit_frame_pointer = release_small,
     });
 
     const launcher_console = b.addExecutable(.{
@@ -23,9 +24,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = true,
+            .strip = release_small,
             .single_threaded = true,
-            .omit_frame_pointer = true,
+            .omit_frame_pointer = release_small,
             .imports = &.{
                 .{ .name = "exewrap", .module = mod },
             },
@@ -40,9 +41,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = true,
+            .strip = release_small,
             .single_threaded = true,
-            .omit_frame_pointer = true,
+            .omit_frame_pointer = release_small,
             .imports = &.{
                 .{ .name = "exewrap", .module = mod },
             },
@@ -57,9 +58,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/stamp.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = true,
+            .strip = release_small,
             .single_threaded = true,
-            .omit_frame_pointer = true,
+            .omit_frame_pointer = release_small,
             .imports = &.{
                 .{ .name = "exewrap", .module = mod },
             },
