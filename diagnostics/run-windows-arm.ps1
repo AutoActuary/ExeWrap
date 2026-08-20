@@ -81,11 +81,10 @@ Stamp (Join-Path $debug "ExeWrap-console.exe") (Join-Path $debug "probe-debug.ex
 Stamp (Join-Path $x86 "ExeWrap-console.exe") (Join-Path $x86 "probe-x86.exe")
 Stamp (Join-Path $tools "ExeWrap-console.exe") (Join-Path $tools "probe-arm64.exe")
 
-$autoryUri = "https://raw.githubusercontent.com/AutoActuary/autory/4595c405/cli/autory.exe"
 $autoryPath = Join-Path $exact "cli\autory.exe"
 $fakePythonPath = Join-Path $exact "bin\python\python\python.exe"
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $autoryPath), (Split-Path -Parent $fakePythonPath) | Out-Null
-Invoke-WebRequest -Uri $autoryUri -OutFile $autoryPath
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "autory-v1.1.0.exe") -Destination $autoryPath
 Copy-Item -LiteralPath (Join-Path $out "fake-python-x64.exe") -Destination $fakePythonPath
 
 $expectedHash = "D9F3854557ECDEF52BB6A67FD544D605A0A7BE59CA1FCD2EE9CD86F77CED8E58"
