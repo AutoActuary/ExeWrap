@@ -103,6 +103,7 @@ try {
   $lookupDir = Join-Path $tmp "lookup"
   New-Item -ItemType Directory -Force -Path $lookupDir | Out-Null
   Write-Utf8NoBom (Join-Path $lookupDir "fixture.cmd") '@exit /b 29'
+  Write-Utf8NoBom (Join-Path $lookupDir "fixture") 'not an executable'
   $fixtureExeConfig = Join-Path $tmp "fixture-exe.config.json"
   Write-Utf8NoBom $fixtureExeConfig '{"command":["cmd.exe","/C","exit /b 31"]}'
   & $stamper --launcher $consoleLauncher --config $fixtureExeConfig (Join-Path $lookupDir "fixture.exe")
@@ -193,6 +194,52 @@ param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest)
     throw "Invalid executable did not preserve the InvalidExe error tag. Output: $invalidOutput"
   }
 
+  $emptySpliceConfig = Join-Path $tmp "empty-splice.config.json"
+  Write-Utf8NoBom $emptySpliceConfig '{"command":[@{args}]}'
+  $emptySpliceExe = Join-Path $tmp "empty-splice-console.exe"
+  & $stamper --launcher $consoleLauncher --config $emptySpliceConfig $emptySpliceExe
+  if ($LASTEXITCODE -ne 0) { throw "Stamper failed for empty-splice runtime test." }
+  $emptySpliceOutput = (& $emptySpliceExe 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $emptySpliceOutput -notmatch 'CommandMustNotBeEmpty') {
+    throw "Empty argument splice did not fail cleanly. Output: $emptySpliceOutput"
+  }
+  if ($emptySpliceOutput -match 'panicked|index out of bounds') {
+    throw "Empty argument splice reached a Rust panic. Output: $emptySpliceOutput"
+  }
+
+  $reservedMarkerConfig = Join-Path $tmp "reserved-marker.config.json"
+  Write-Utf8NoBom $reservedMarkerConfig '{"env":{"VALUE":"8c0e8d4c-32af-4fd8-9c68-6a0f97efeb6a"},"command":["cmd.exe"]}'
+  $preservedOutput = Join-Path $tmp "preserved-output.exe"
+  Write-Utf8NoBom $preservedOutput 'keep me'
+  $reservedMarkerError = (& $stamper --launcher $consoleLauncher --config $reservedMarkerConfig $preservedOutput 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $reservedMarkerError -notmatch 'ReservedOverlayMarkerInConfig') {
+    throw "Reserved marker was not rejected clearly. Output: $reservedMarkerError"
+  }
+  Assert-Equal 'keep me' ([IO.File]::ReadAllText($preservedOutput)) "Failed marker preflight changed an existing output."
+
+  $certificateLauncher = Join-Path $tmp "certificate-table-launcher.exe"
+  Copy-Item -LiteralPath $consoleLauncher -Destination $certificateLauncher
+  $certificateBytes = [IO.File]::ReadAllBytes($certificateLauncher)
+  $certificatePeOffset = [BitConverter]::ToUInt32($certificateBytes, 0x3c)
+  $certificateOptionalOffset = $certificatePeOffset + 24
+  $certificateMagic = [BitConverter]::ToUInt16($certificateBytes, $certificateOptionalOffset)
+  $certificateDirectoriesOffset = if ($certificateMagic -eq 0x20b) { 112 } else { 96 }
+  $certificateDirectoryOffset = $certificateOptionalOffset + $certificateDirectoriesOffset + 32
+  [BitConverter]::GetBytes([uint32]$certificateBytes.Length).CopyTo($certificateBytes, $certificateDirectoryOffset)
+  [BitConverter]::GetBytes([uint32]8).CopyTo($certificateBytes, $certificateDirectoryOffset + 4)
+  [IO.File]::WriteAllBytes($certificateLauncher, $certificateBytes)
+  $signedInputError = (& $stamper --launcher $certificateLauncher --config $okConfig (Join-Path $tmp "signed-input-output.exe") 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $signedInputError -notmatch 'SignedLauncherNotSupported') {
+    throw "Launcher input with a certificate table was not rejected. Output: $signedInputError"
+  }
+
+  $invalidJsonConfig = Join-Path $tmp "invalid-json.config.json"
+  Write-Utf8NoBom $invalidJsonConfig '{"command":['
+  $invalidJsonError = (& $stamper --launcher $consoleLauncher --config $invalidJsonConfig (Join-Path $tmp "invalid-json.exe") 2>&1 | Out-String)
+  if ($LASTEXITCODE -eq 0 -or $invalidJsonError -notmatch 'InvalidJson|SyntaxError') {
+    throw "Malformed JSON was not rejected by stamper preflight. Output: $invalidJsonError"
+  }
+
   $iconPath = Join-Path $tmp "tiny.ico"
   [byte[]]$iconBytes = @(
     0, 0, 1, 0, 1, 0,
@@ -218,6 +265,10 @@ param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest)
   if ($LASTEXITCODE -ne 0) { throw "Restamping an existing launcher failed." }
   & $restamped
   Assert-Equal 12 $LASTEXITCODE "Restamped launcher did not replace the prior config."
+  & $stamper --launcher $firstStamped --config $secondConfig $firstStamped
+  if ($LASTEXITCODE -ne 0) { throw "In-place restamping failed." }
+  & $firstStamped
+  Assert-Equal 12 $LASTEXITCODE "In-place restamping did not atomically replace the prior config."
 
   $jobConfig = Join-Path $tmp "job.config.json"
   Write-Utf8NoBom $jobConfig '{"kill_children_on_exit":true,"command":["powershell.exe","-NoProfile","-Command","Start-Sleep -Seconds 2; [System.IO.File]::WriteAllText(''job-survived.txt'', ''alive'')"]}'

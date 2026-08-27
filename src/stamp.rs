@@ -1,16 +1,18 @@
 use std::env;
-use std::ffi::c_void;
-use std::fs::{File, OpenOptions};
+use std::ffi::{OsStr, OsString, c_void};
+use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
 
 use crate::{
     CONFIG_START_MARKER, EmbeddedConfigRange, Error, MAX_EXE_BYTES, Result, WindowsSubsystem,
-    embedded_config_range_from_bytes, read_file_limited, set_windows_subsystem,
-    validate_config_bytes,
+    embedded_config_range_from_bytes, pe_has_certificate_table, read_file_limited,
+    set_windows_subsystem, validate_stampable_config,
 };
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -20,6 +22,9 @@ const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 const DEFAULT_GROUP_ICON_ID: u16 = 1;
 const NEUTRAL_LANGUAGE: u16 = 0;
+const MOVE_FILE_REPLACE_EXISTING: u32 = 0x1;
+const MOVE_FILE_WRITE_THROUGH: u32 = 0x8;
+const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StampOptions {
@@ -52,35 +57,105 @@ struct IconImage {
 }
 
 pub fn main_entry() -> ! {
-    if run().is_err() {
+    if let Err(error) = run() {
+        match &error {
+            Error::Io(source) => {
+                eprintln!("ExeWrap-stamper error: {}: {source}", error.tag());
+            }
+            _ => eprintln!("ExeWrap-stamper error: {}", error.tag()),
+        }
         std::process::exit(1);
     }
     std::process::exit(0)
 }
 
 fn run() -> Result<()> {
-    let args = env::args().collect::<Vec<_>>();
+    let args = env::args_os().collect::<Vec<_>>();
     let options = parse_args(&args).inspect_err(|_| {
         write_usage();
     })?;
-    let base = read_file_limited(&options.launcher_path, MAX_EXE_BYTES)?;
-    let config = read_file_limited(&options.config_path, MAX_CONFIG_BYTES)?;
-    validate_config_bytes(&config)?;
-    let existing_range = embedded_config_range_from_bytes(&base);
+    stamp(&options)
+}
 
-    {
-        let mut output = File::create(&options.output_path)?;
-        write_base_before_config(&mut output, &base, existing_range)?;
+fn stamp(options: &StampOptions) -> Result<()> {
+    let base = read_file_limited(&options.launcher_path, MAX_EXE_BYTES)?;
+    if pe_has_certificate_table(&base)? {
+        return Err(Error::SignedLauncherNotSupported);
     }
+    let config = read_file_limited(&options.config_path, MAX_CONFIG_BYTES)?;
+    validate_stampable_config(&config)?;
+    let existing_range = embedded_config_range_from_bytes(&base);
+    let (mut staged, mut output) = StagedOutput::create(&options.output_path)?;
+
+    write_base_before_config(&mut output, &base, existing_range)?;
+    output.sync_all()?;
+    drop(output);
     if let Some(icon_path) = &options.icon_path {
-        stamp_icon(&options.output_path, icon_path)?;
+        stamp_icon(&staged.path, icon_path)?;
     }
-    apply_subsystem_override(&options)?;
+    apply_subsystem_override(&staged.path, options.subsystem)?;
     {
-        let mut output = OpenOptions::new().append(true).open(&options.output_path)?;
+        let mut output = OpenOptions::new().append(true).open(&staged.path)?;
         write_config_overlay(&mut output, &base, &config, existing_range)?;
+        output.sync_all()?;
     }
+    staged.commit(&options.output_path)?;
     Ok(())
+}
+
+struct StagedOutput {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl StagedOutput {
+    fn create(output_path: &Path) -> Result<(Self, File)> {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let parent = output_path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = output_path.file_name().ok_or(Error::MissingOutputPath)?;
+        for _ in 0..128 {
+            let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let mut temporary_name = OsString::from(".");
+            temporary_name.push(file_name);
+            temporary_name.push(format!(".exewrap-{}-{sequence}.tmp", std::process::id()));
+            let path = parent.join(temporary_name);
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    return Ok((
+                        Self {
+                            path,
+                            committed: false,
+                        },
+                        file,
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a unique staging file",
+        )
+        .into())
+    }
+
+    fn commit(&mut self, output_path: &Path) -> Result<()> {
+        replace_file(&self.path, output_path)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedOutput {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn write_base_before_config(
@@ -110,7 +185,7 @@ fn write_config_overlay(
     Ok(())
 }
 
-fn parse_args(args: &[String]) -> Result<StampOptions> {
+fn parse_args(args: &[OsString]) -> Result<StampOptions> {
     let mut launcher_path = None;
     let mut config_path = None;
     let mut icon_path = None;
@@ -119,35 +194,35 @@ fn parse_args(args: &[String]) -> Result<StampOptions> {
     let mut index = 1;
 
     while index < args.len() {
-        match args[index].as_str() {
-            "--help" | "-h" => {
+        match args[index].to_str() {
+            Some("--help" | "-h") => {
                 write_usage();
                 std::process::exit(0);
             }
-            "--launcher" => {
+            Some("--launcher") => {
                 index += 1;
                 launcher_path = Some(PathBuf::from(
                     args.get(index).ok_or(Error::MissingLauncherPath)?,
                 ));
             }
-            "--config" => {
+            Some("--config") => {
                 index += 1;
                 config_path = Some(PathBuf::from(
                     args.get(index).ok_or(Error::MissingConfigPath)?,
                 ));
             }
-            "--icon" => {
+            Some("--icon") => {
                 index += 1;
                 icon_path = Some(PathBuf::from(
                     args.get(index).ok_or(Error::MissingIconPath)?,
                 ));
             }
-            "--subsystem" => {
+            Some("--subsystem") => {
                 index += 1;
                 subsystem = parse_subsystem(args.get(index).ok_or(Error::MissingSubsystem)?)?;
             }
-            option if option.starts_with("--") => return Err(Error::UnknownOption),
-            value if output_path.is_none() => output_path = Some(PathBuf::from(value)),
+            Some(option) if option.starts_with("--") => return Err(Error::UnknownOption),
+            _ if output_path.is_none() => output_path = Some(PathBuf::from(&args[index])),
             _ => return Err(Error::TooManyOutputPaths),
         }
         index += 1;
@@ -162,11 +237,11 @@ fn parse_args(args: &[String]) -> Result<StampOptions> {
     })
 }
 
-fn parse_subsystem(value: &str) -> Result<StampSubsystem> {
-    match value {
-        "inherit" => Ok(StampSubsystem::Inherit),
-        "console" => Ok(StampSubsystem::Console),
-        "windowed" => Ok(StampSubsystem::Windowed),
+fn parse_subsystem(value: &OsStr) -> Result<StampSubsystem> {
+    match value.to_str() {
+        Some("inherit") => Ok(StampSubsystem::Inherit),
+        Some("console") => Ok(StampSubsystem::Console),
+        Some("windowed") => Ok(StampSubsystem::Windowed),
         _ => Err(Error::InvalidSubsystem),
     }
 }
@@ -177,26 +252,13 @@ fn write_usage() {
     );
 }
 
-fn apply_subsystem_override(options: &StampOptions) -> Result<()> {
-    let subsystem = match options.subsystem {
+fn apply_subsystem_override(output_path: &Path, requested: StampSubsystem) -> Result<()> {
+    let subsystem = match requested {
         StampSubsystem::Inherit => return Ok(()),
         StampSubsystem::Console => WindowsSubsystem::WindowsConsole,
         StampSubsystem::Windowed => WindowsSubsystem::WindowsGui,
     };
-    set_windows_subsystem(&options.output_path, subsystem).map_err(|error| {
-        match error {
-            Error::InvalidPeFile => eprintln!(
-                "ExeWrap-stamper error: cannot set subsystem on malformed PE file: {}",
-                options.output_path.display()
-            ),
-            _ => eprintln!(
-                "ExeWrap-stamper error: cannot set subsystem on {}: {}",
-                options.output_path.display(),
-                error.tag()
-            ),
-        }
-        error
-    })
+    set_windows_subsystem(output_path, subsystem)
 }
 
 fn stamp_icon(output_path: &Path, icon_path: &Path) -> Result<()> {
@@ -366,6 +428,61 @@ fn resource_id(id: u16) -> *const u16 {
     usize::from(id) as *const u16
 }
 
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    let source = nul_terminated_path(source)?;
+    let destination = nul_terminated_path(destination)?;
+    let replaced = if destination_path_exists(destination.as_slice()) {
+        // SAFETY: both paths are live NUL-terminated buffers and no backup is requested.
+        unsafe {
+            ReplaceFileW(
+                destination.as_ptr(),
+                source.as_ptr(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        }
+    } else {
+        // SAFETY: both paths are live NUL-terminated buffers for this call.
+        unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVE_FILE_REPLACE_EXISTING | MOVE_FILE_WRITE_THROUGH,
+            )
+        }
+    };
+    if replaced == 0 {
+        Err(io::Error::last_os_error().into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn destination_path_exists(path: &[u16]) -> bool {
+    // SAFETY: path is a live NUL-terminated buffer.
+    unsafe { GetFileAttributesW(path.as_ptr()) != INVALID_FILE_ATTRIBUTES }
+}
+
+#[cfg(windows)]
+fn nul_terminated_path(path: &Path) -> Result<Vec<u16>> {
+    let mut value = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if value.contains(&0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL").into());
+    }
+    value.push(0);
+    Ok(value)
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    fs::rename(source, destination)?;
+    Ok(())
+}
+
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_le_bytes(
         bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
@@ -407,6 +524,16 @@ unsafe extern "system" {
         data_length: u32,
     ) -> i32;
     fn EndUpdateResourceW(update: *mut c_void, discard: i32) -> i32;
+    fn ReplaceFileW(
+        replaced_file_name: *const u16,
+        replacement_file_name: *const u16,
+        backup_file_name: *const u16,
+        replace_flags: u32,
+        exclude: *mut c_void,
+        reserved: *mut c_void,
+    ) -> i32;
+    fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: u32) -> i32;
+    fn GetFileAttributesW(file_name: *const u16) -> u32;
 }
 
 #[cfg(test)]
@@ -425,21 +552,27 @@ mod tests {
             "windowed",
             "out.exe",
         ]
-        .map(str::to_owned);
+        .map(OsString::from);
         let options = parse_args(&args).unwrap();
         assert_eq!(options.launcher_path, Path::new("ExeWrap-console.exe"));
         assert_eq!(options.config_path, Path::new("config.json"));
         assert!(options.icon_path.is_none());
         assert_eq!(options.subsystem, StampSubsystem::Windowed);
         assert_eq!(options.output_path, Path::new("out.exe"));
-        assert_eq!(parse_subsystem("inherit").unwrap(), StampSubsystem::Inherit);
-        assert_eq!(parse_subsystem("console").unwrap(), StampSubsystem::Console);
         assert_eq!(
-            parse_subsystem("windowed").unwrap(),
+            parse_subsystem(OsStr::new("inherit")).unwrap(),
+            StampSubsystem::Inherit
+        );
+        assert_eq!(
+            parse_subsystem(OsStr::new("console")).unwrap(),
+            StampSubsystem::Console
+        );
+        assert_eq!(
+            parse_subsystem(OsStr::new("windowed")).unwrap(),
             StampSubsystem::Windowed
         );
         assert!(matches!(
-            parse_subsystem("gui"),
+            parse_subsystem(OsStr::new("gui")),
             Err(Error::InvalidSubsystem)
         ));
     }
@@ -454,7 +587,7 @@ mod tests {
             "config.json",
             "out.exe",
         ]
-        .map(str::to_owned);
+        .map(OsString::from);
         assert_eq!(
             parse_args(&args).unwrap().subsystem,
             StampSubsystem::Inherit
@@ -478,4 +611,39 @@ mod tests {
         assert_eq!(group.len(), 20);
         assert_eq!(&group[4..6], &1u16.to_le_bytes());
     }
+
+    #[test]
+    fn failed_stamp_preserves_existing_output() {
+        let root = env::temp_dir().join(format!(
+            "exewrap-atomic-stamp-test-{}-{}",
+            std::process::id(),
+            COUNTER_FOR_TESTS.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.json");
+        let icon_path = root.join("invalid.ico");
+        let output_path = root.join("existing.exe");
+        fs::write(&config_path, br#"{"command":["cmd.exe"]}"#).unwrap();
+        fs::write(&icon_path, b"not an icon").unwrap();
+        fs::write(&output_path, b"keep me").unwrap();
+        let options = StampOptions {
+            launcher_path: env::current_exe().unwrap(),
+            config_path,
+            icon_path: Some(icon_path),
+            subsystem: StampSubsystem::Inherit,
+            output_path: output_path.clone(),
+        };
+        assert!(matches!(stamp(&options), Err(Error::InvalidIconFile)));
+        assert_eq!(fs::read(&output_path).unwrap(), b"keep me");
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("exewrap-")
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    static COUNTER_FOR_TESTS: AtomicU64 = AtomicU64::new(0);
 }

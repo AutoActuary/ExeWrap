@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{OsStr, OsString, c_void};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::{env, io, mem, ptr};
@@ -28,7 +28,10 @@ pub fn main_entry() -> ! {
 
 fn run() -> Result<()> {
     let exe_path = env::current_exe()?;
-    let exe_path_text = exe_path.to_string_lossy().into_owned();
+    let exe_path_text = exe_path
+        .to_str()
+        .map(str::to_owned)
+        .ok_or(Error::WindowsTextMustBeUnicode)?;
     let paths = RuntimePaths::init(exe_path_text.clone())?;
     let exe_bytes = read_executable(&exe_path).inspect_err(|error| {
         eprintln!(
@@ -42,10 +45,11 @@ fn run() -> Result<()> {
     })?;
 
     let mut environment = EnvMap::from_current();
-    let process_args = env::args().collect::<Vec<_>>();
+    let process_args = env::args_os().collect::<Vec<_>>();
     let args0 = process_args
         .first()
-        .map_or(exe_path_text.as_str(), String::as_str);
+        .and_then(|value| value.to_str())
+        .unwrap_or(exe_path_text.as_str());
     let user_args = process_args.get(1..).unwrap_or(&[]);
     let config = parse_config_with_options(
         config_bytes,
@@ -73,7 +77,11 @@ fn run() -> Result<()> {
     .inspect_err(|error| {
         report_launch_error(&config.command[0], &config.cwd, error);
     })?;
-    std::process::exit(status.code().unwrap_or(1));
+    std::process::exit(compatible_exit_code(status.code()));
+}
+
+fn compatible_exit_code(code: Option<i32>) -> i32 {
+    code.map_or(1, |value| i32::from(value as u8))
 }
 
 fn read_executable(path: &std::path::Path) -> Result<Vec<u8>> {
@@ -149,7 +157,8 @@ fn report_config_error(error: &Error) {
     }
 }
 
-fn report_launch_error(command0: &str, cwd: &str, error: &Error) {
+fn report_launch_error(command0: &OsStr, cwd: &str, error: &Error) {
+    let command0 = command0.to_string_lossy();
     if matches!(error, Error::Io(io_error) if io_error.kind() == io::ErrorKind::NotFound) {
         eprintln!("ExeWrap launch error: command[0] not found: {command0}. cwd={cwd}");
     } else {
@@ -161,7 +170,7 @@ fn report_launch_error(command0: &str, cwd: &str, error: &Error) {
 }
 
 fn configured_command(
-    command: &[String],
+    command: &[OsString],
     cwd: &str,
     environment: &EnvMap,
     inherit_stdio: bool,
@@ -187,7 +196,7 @@ fn configured_command(
     Ok(child)
 }
 
-fn validate_batch_arguments(program: &Path, arguments: &[String]) -> Result<()> {
+fn validate_batch_arguments(program: &Path, arguments: &[OsString]) -> Result<()> {
     let is_batch = program
         .extension()
         .and_then(|extension| extension.to_str())
@@ -196,9 +205,20 @@ fn validate_batch_arguments(program: &Path, arguments: &[String]) -> Result<()> 
         });
     if is_batch
         && arguments.iter().any(|argument| {
-            argument
-                .chars()
-                .any(|value| matches!(value, '\0' | '\n' | '\r'))
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStrExt;
+                argument
+                    .encode_wide()
+                    .any(|value| matches!(value, 0 | 10 | 13))
+            }
+            #[cfg(not(windows))]
+            {
+                argument
+                    .to_string_lossy()
+                    .chars()
+                    .any(|value| matches!(value, '\0' | '\n' | '\r'))
+            }
         })
     {
         Err(Error::InvalidBatchScriptArg)
@@ -208,7 +228,7 @@ fn validate_batch_arguments(program: &Path, arguments: &[String]) -> Result<()> 
 }
 
 #[cfg(windows)]
-fn resolve_program(program: &str, cwd: &str) -> PathBuf {
+fn resolve_program(program: &OsStr, cwd: &str) -> PathBuf {
     let program_path = Path::new(program);
     let Some(filename) = program_path.file_name() else {
         return program_path.to_owned();
@@ -231,12 +251,8 @@ fn resolve_program(program: &str, cwd: &str) -> PathBuf {
     } else {
         directories.push(child_cwd);
         if let Some(path) = env::var_os("PATH") {
-            directories.extend(
-                path.to_string_lossy()
-                    .split(';')
-                    .filter(|entry| !entry.is_empty())
-                    .map(PathBuf::from),
-            );
+            directories
+                .extend(env::split_paths(&path).filter(|entry| !entry.as_os_str().is_empty()));
         }
     }
 
@@ -251,17 +267,24 @@ fn resolve_program(program: &str, cwd: &str) -> PathBuf {
         })
         .unwrap_or_default();
 
+    let explicit_path = program_path.is_absolute()
+        || program_path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty());
+    let has_extension = Path::new(filename).extension().is_some();
     for directory in directories {
         let exact = directory.join(filename);
-        if exact.is_file() {
+        if (explicit_path || has_extension) && exact.is_file() {
             return exact;
         }
-        for extension in &extensions {
-            let mut extended = filename.to_os_string();
-            extended.push(extension);
-            let candidate = directory.join(extended);
-            if candidate.is_file() {
-                return candidate;
+        if !has_extension {
+            for extension in &extensions {
+                let mut extended = filename.to_os_string();
+                extended.push(extension);
+                let candidate = directory.join(extended);
+                if candidate.is_file() {
+                    return candidate;
+                }
             }
         }
     }
@@ -285,12 +308,12 @@ fn is_supported_windows_extension(extension: &str) -> bool {
 }
 
 #[cfg(not(windows))]
-fn resolve_program(program: &str, _: &str) -> PathBuf {
+fn resolve_program(program: &OsStr, _: &str) -> PathBuf {
     PathBuf::from(program)
 }
 
 fn spawn_and_wait(
-    command: &[String],
+    command: &[OsString],
     cwd: &str,
     environment: &EnvMap,
     inherit_stdio: bool,
@@ -317,7 +340,7 @@ fn spawn_with_kill_on_close_job(command: &mut Command, inherit_stdio: bool) -> R
         let _ = child.kill();
         return Err(Error::AssignProcessToJobObjectFailed);
     }
-    // SAFETY: CreateProcess created every thread in `process` suspended via CREATE_SUSPENDED.
+    // SAFETY: `process` is a live child handle created with CREATE_SUSPENDED.
     if unsafe { NtResumeProcess(process) } < 0 {
         let _ = child.kill();
         return Err(Error::ResumeThreadFailed);
@@ -420,4 +443,18 @@ unsafe extern "system" {
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtResumeProcess(process: *mut c_void) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_exit_codes_keep_v2_low_byte_behavior() {
+        assert_eq!(compatible_exit_code(Some(0)), 0);
+        assert_eq!(compatible_exit_code(Some(255)), 255);
+        assert_eq!(compatible_exit_code(Some(256)), 0);
+        assert_eq!(compatible_exit_code(Some(4660)), 52);
+        assert_eq!(compatible_exit_code(None), 1);
+    }
 }
