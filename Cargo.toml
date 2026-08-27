@@ -1,11 +1,12 @@
 [package]
 name = "exewrap"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 description = "Portable executable wrapper for Windows"
 repository = "https://github.com/AutoActuary/ExeWrap"
+publish = false
 
 [[bin]]
 name = "ExeWrap-console"

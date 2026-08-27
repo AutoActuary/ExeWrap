@@ -1,4 +1,8 @@
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
 use crate::{EnvMap, Error, Result};
 
@@ -39,7 +43,7 @@ pub struct Metadata {
 pub struct EvalContext<'a> {
     pub metadata: &'a Metadata,
     pub env: &'a mut EnvMap,
-    pub args: &'a [String],
+    pub args: &'a [OsString],
     pub strictness: Strictness,
 }
 
@@ -47,7 +51,7 @@ pub struct EvalContext<'a> {
 pub enum Value {
     String(String),
     Integer(usize),
-    List(Vec<String>),
+    List(Vec<OsString>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -263,9 +267,7 @@ impl Tokenizer<'_> {
             self.index += 1;
         }
         let lexeme = &self.input[start..self.index];
-        let integer = lexeme
-            .parse::<usize>()
-            .map_err(|_| Error::IntegerOutOfRange)?;
+        let integer = lexeme.parse::<usize>().map_err(|_| Error::Overflow)?;
         Ok(Token {
             tag: TokenTag::Integer,
             lexeme: lexeme.to_owned(),
@@ -557,30 +559,50 @@ fn args_as_json(context: &EvalContext<'_>) -> Result<String> {
         if index > 0 {
             out.push(',');
         }
-        append_args_json_string(&mut out, argument);
+        append_args_json_string(&mut out, argument)?;
     }
     out.push(']');
     Ok(out)
 }
 
-fn append_args_json_string(out: &mut String, input: &str) {
+fn append_args_json_string(out: &mut String, input: &OsStr) -> Result<()> {
     out.push('"');
-    for character in input.chars() {
-        if character.is_ascii() {
-            let byte = character as u8;
-            if byte < 0x20 || matches!(byte, b'"' | b'\'' | b'\\' | b'`' | b'$') {
-                append_json_unicode_escape(out, u16::from(byte));
+    #[cfg(windows)]
+    {
+        for unit in input.encode_wide() {
+            if unit <= 0x7f {
+                let byte = unit as u8;
+                if byte < 0x20 || matches!(byte, b'"' | b'\'' | b'\\' | b'`' | b'$') {
+                    append_json_unicode_escape(out, unit);
+                } else {
+                    out.push(char::from(byte));
+                }
             } else {
-                out.push(character);
-            }
-        } else {
-            let mut units = [0u16; 2];
-            for unit in character.encode_utf16(&mut units).iter().copied() {
                 append_json_unicode_escape(out, unit);
             }
         }
     }
+    #[cfg(not(windows))]
+    {
+        let input = input.to_str().ok_or(Error::ArgumentMustBeUnicode)?;
+        for character in input.chars() {
+            if character.is_ascii() {
+                let byte = character as u8;
+                if byte < 0x20 || matches!(byte, b'"' | b'\'' | b'\\' | b'`' | b'$') {
+                    append_json_unicode_escape(out, u16::from(byte));
+                } else {
+                    out.push(character);
+                }
+            } else {
+                let mut units = [0u16; 2];
+                for unit in character.encode_utf16(&mut units).iter().copied() {
+                    append_json_unicode_escape(out, unit);
+                }
+            }
+        }
+    }
     out.push('"');
+    Ok(())
 }
 
 fn append_json_unicode_escape(out: &mut String, value: u16) {
@@ -589,8 +611,11 @@ fn append_json_unicode_escape(out: &mut String, value: u16) {
 }
 
 fn resolve_env(context: &EvalContext<'_>, name: &str) -> Result<String> {
-    match context.env.get(name) {
-        Some(value) => Ok(value.to_owned()),
+    match context.env.get_os(name) {
+        Some(value) => value
+            .to_str()
+            .map(str::to_owned)
+            .ok_or(Error::EnvironmentValueMustBeUnicode),
         None if context.strictness.error_on_missing_env => Err(Error::MissingEnvironmentVariable),
         None => Ok(String::new()),
     }
@@ -598,7 +623,7 @@ fn resolve_env(context: &EvalContext<'_>, name: &str) -> Result<String> {
 
 fn resolve_list_index(
     context: &EvalContext<'_>,
-    items: &[String],
+    items: &[OsString],
     expression: IndexExpression,
 ) -> Result<Value> {
     let index = evaluate_index_expression(expression, items.len())?;
@@ -612,10 +637,13 @@ fn resolve_list_index(
             Ok(Value::String(String::new()))
         };
     }
-    Ok(Value::String(items[(index - 1) as usize].clone()))
+    items[(index - 1) as usize]
+        .to_str()
+        .map(|value| Value::String(value.to_owned()))
+        .ok_or(Error::ArgumentMustBeUnicode)
 }
 
-fn resolve_list_slice(items: &[String], slice: SliceExpression) -> Result<Value> {
+fn resolve_list_slice(items: &[OsString], slice: SliceExpression) -> Result<Value> {
     let default_step = IndexExpression {
         base: IndexBase::Integer(1),
         offset: 0,
@@ -1172,7 +1200,7 @@ mod tests {
     fn evaluate_with(
         input: &str,
         environment: &mut EnvMap,
-        arguments: &[String],
+        arguments: &[OsString],
         strictness: Strictness,
     ) -> Result<Value> {
         let metadata = metadata();
@@ -1294,7 +1322,7 @@ mod tests {
 
     #[test]
     fn argument_indexing_and_slicing_are_one_based_and_inclusive() {
-        let args = ["10", "20", "30", "40", "50", "60"].map(str::to_owned);
+        let args = ["10", "20", "30", "40", "50", "60"].map(OsString::from);
         let mut env = EnvMap::default();
         assert_eq!(
             evaluate_with("args[1]", &mut env, &args, Strictness::default()).unwrap(),
@@ -1351,7 +1379,7 @@ mod tests {
 
     #[test]
     fn argument_indexes_can_feed_string_transforms() {
-        let args = ["alpha", r#"C:\Input\demo.txt"#].map(str::to_owned);
+        let args = ["alpha", r#"C:\Input\demo.txt"#].map(OsString::from);
         let mut env = EnvMap::default();
         assert_eq!(
             evaluate_with("args[2]:filename", &mut env, &args, Strictness::default()).unwrap(),
@@ -1372,7 +1400,7 @@ mod tests {
             "tab\tnul\0slash\\",
             "dollar$backtick`semi;paren()",
         ]
-        .map(str::to_owned);
+        .map(OsString::from);
         let mut env = EnvMap::default();
         assert_eq!(
             evaluate_with("args_as_json", &mut env, &args, Strictness::default()).unwrap(),
@@ -1385,7 +1413,7 @@ mod tests {
 
     #[test]
     fn args_as_json_uses_fixed_unicode_escapes() {
-        let args = ["plain", "a'b$`\\\n", "é😀"].map(str::to_owned);
+        let args = ["plain", "a'b$`\\\n", "é😀"].map(OsString::from);
         let mut env = EnvMap::default();
         assert_eq!(
             evaluate_with("args_as_json", &mut env, &args, Strictness::default()).unwrap(),
@@ -1393,6 +1421,23 @@ mod tests {
                 r#"["plain","a\u0027b\u0024\u0060\u005c\u000a","\u00e9\ud83d\ude00"]"#.into()
             )
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn args_as_json_preserves_unpaired_utf16_units() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let args = [OsString::from_wide(&[0xd800, b'A' as u16])];
+        let mut env = EnvMap::default();
+        assert_eq!(
+            evaluate_with("args_as_json", &mut env, &args, Strictness::default()).unwrap(),
+            Value::String(r#"["\ud800A"]"#.into())
+        );
+        assert!(matches!(
+            evaluate_with("args[1]", &mut env, &args, Strictness::default()),
+            Err(Error::ArgumentMustBeUnicode)
+        ));
     }
 
     #[test]

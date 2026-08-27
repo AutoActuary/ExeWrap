@@ -1,11 +1,15 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use std::collections::BTreeSet;
-use std::ffi::c_void;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString, c_void};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::{env, io, ptr, slice};
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
 #[cfg(test)]
 use std::fs;
@@ -34,6 +38,11 @@ pub enum Error {
     NoEmbeddedConfig,
     EmptyEmbeddedConfig,
     ConfigMustBeUtf8,
+    ReservedOverlayMarkerInConfig,
+    SignedLauncherNotSupported,
+    WindowsTextMustBeUnicode,
+    ArgumentMustBeUnicode,
+    EnvironmentValueMustBeUnicode,
     InvalidPeFile,
     UnsupportedWindowsSubsystem,
     ConfigMustBeObject,
@@ -67,6 +76,7 @@ pub enum Error {
     UnterminatedString,
     InvalidString,
     IntegerOutOfRange,
+    Overflow,
     ExpectedIdentifier,
     ExpectedInteger,
     ExpectedString,
@@ -133,6 +143,11 @@ impl Error {
             Self::NoEmbeddedConfig => "NoEmbeddedConfig",
             Self::EmptyEmbeddedConfig => "EmptyEmbeddedConfig",
             Self::ConfigMustBeUtf8 => "ConfigMustBeUtf8",
+            Self::ReservedOverlayMarkerInConfig => "ReservedOverlayMarkerInConfig",
+            Self::SignedLauncherNotSupported => "SignedLauncherNotSupported",
+            Self::WindowsTextMustBeUnicode => "WindowsTextMustBeUnicode",
+            Self::ArgumentMustBeUnicode => "ArgumentMustBeUnicode",
+            Self::EnvironmentValueMustBeUnicode => "EnvironmentValueMustBeUnicode",
             Self::InvalidPeFile => "InvalidPeFile",
             Self::UnsupportedWindowsSubsystem => "UnsupportedWindowsSubsystem",
             Self::ConfigMustBeObject => "ConfigMustBeObject",
@@ -166,6 +181,7 @@ impl Error {
             Self::UnterminatedString => "UnterminatedString",
             Self::InvalidString => "InvalidString",
             Self::IntegerOutOfRange => "IntegerOutOfRange",
+            Self::Overflow => "Overflow",
             Self::ExpectedIdentifier => "ExpectedIdentifier",
             Self::ExpectedInteger => "ExpectedInteger",
             Self::ExpectedString => "ExpectedString",
@@ -219,65 +235,108 @@ impl From<io::Error> for Error {
     }
 }
 
+#[derive(Clone, Debug)]
+struct EnvKey {
+    raw: OsString,
+    #[cfg(windows)]
+    wide: Vec<u16>,
+}
+
+impl EnvKey {
+    fn new(raw: OsString) -> Self {
+        #[cfg(windows)]
+        let wide = raw.encode_wide().collect();
+        Self {
+            raw,
+            #[cfg(windows)]
+            wide,
+        }
+    }
+}
+
+impl PartialEq for EnvKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for EnvKey {}
+
+impl PartialOrd for EnvKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for EnvKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        #[cfg(windows)]
+        {
+            let (Ok(left_len), Ok(right_len)) = (
+                i32::try_from(self.wide.len()),
+                i32::try_from(other.wide.len()),
+            ) else {
+                return self.wide.cmp(&other.wide);
+            };
+            // SAFETY: both stored UTF-16 buffers are live for their supplied lengths.
+            match unsafe {
+                CompareStringOrdinal(
+                    self.wide.as_ptr(),
+                    left_len,
+                    other.wide.as_ptr(),
+                    right_len,
+                    1,
+                )
+            } {
+                1 => Ordering::Less,
+                2 => Ordering::Equal,
+                3 => Ordering::Greater,
+                _ => self.wide.cmp(&other.wide),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            self.raw.cmp(&other.raw)
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct EnvMap {
-    entries: Vec<(String, String)>,
+    entries: BTreeMap<EnvKey, OsString>,
 }
 
 impl EnvMap {
     pub fn from_current() -> Self {
-        let mut map = Self::default();
-        for (name, value) in env::vars_os() {
-            map.put(
-                name.to_string_lossy().into_owned(),
-                value.to_string_lossy().into_owned(),
-            );
+        Self {
+            entries: env::vars_os()
+                .map(|(name, value)| (EnvKey::new(name), value))
+                .collect(),
         }
-        map
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
         self.entries
-            .iter()
-            .find(|(candidate, _)| env_names_equal(candidate, name))
-            .map(|(_, value)| value.as_str())
+            .get(&EnvKey::new(name.into()))
+            .and_then(|value| value.to_str())
+    }
+
+    pub fn get_os(&self, name: &str) -> Option<&OsStr> {
+        self.entries
+            .get(&EnvKey::new(name.into()))
+            .map(OsString::as_os_str)
     }
 
     pub fn put(&mut self, name: String, value: String) {
-        if let Some((existing_name, existing_value)) = self
-            .entries
-            .iter_mut()
-            .find(|(candidate, _)| env_names_equal(candidate, &name))
-        {
-            *existing_name = name;
-            *existing_value = value;
-        } else {
-            self.entries.push((name, value));
-        }
+        let key = EnvKey::new(name.into());
+        self.entries.remove(&key);
+        self.entries.insert(key, value.into());
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
         self.entries
             .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-    }
-}
-
-fn env_names_equal(left: &str, right: &str) -> bool {
-    #[cfg(windows)]
-    {
-        let left = left.encode_utf16().collect::<Vec<_>>();
-        let right = right.encode_utf16().collect::<Vec<_>>();
-        let (Ok(left_len), Ok(right_len)) = (i32::try_from(left.len()), i32::try_from(right.len()))
-        else {
-            return false;
-        };
-        // SAFETY: both UTF-16 buffers are readable for their supplied lengths.
-        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) == 2 }
-    }
-    #[cfg(not(windows))]
-    {
-        left == right
+            .map(|(name, value)| (name.raw.as_os_str(), value.as_os_str()))
     }
 }
 
@@ -373,6 +432,7 @@ impl JsonParser<'_> {
         self.index += 1;
         self.skip_whitespace();
         let mut object = Vec::new();
+        let mut keys = BTreeSet::new();
         if self.consume(b'}') {
             return Ok(JsonValue::Object(object));
         }
@@ -382,17 +442,15 @@ impl JsonParser<'_> {
                 return Err(Error::SyntaxError);
             }
             let key = self.parse_string()?;
+            if !keys.insert(key.clone()) {
+                return Err(Error::DuplicateJsonKey);
+            }
             self.skip_whitespace();
             if !self.consume(b':') {
                 return Err(Error::SyntaxError);
             }
             let value = self.parse_value(depth + 1)?;
-            if let Some((_, existing)) = object.iter_mut().find(|(candidate, _)| *candidate == key)
-            {
-                *existing = value;
-            } else {
-                object.push((key, value));
-            }
+            object.push((key, value));
             self.skip_whitespace();
             if self.consume(b'}') {
                 return Ok(JsonValue::Object(object));
@@ -609,16 +667,32 @@ pub struct RuntimePaths {
 
 impl RuntimePaths {
     pub fn init(exe_path: String) -> Result<Self> {
-        let user_dirs = KnownUserDirs::init();
+        let user_dirs = KnownUserDirs::init()?;
         Self::init_with_known_user_dirs(exe_path, user_dirs)
     }
 
     fn init_with_known_user_dirs(exe_path: String, user_dirs: KnownUserDirs) -> Result<Self> {
         let path = Path::new(&exe_path);
-        let exe_dir = path.parent().map_or_else(|| ".".into(), path_to_string);
-        let exe_filename = path.file_name().map_or_else(String::new, os_to_string);
-        let exe_filename_noext = path.file_stem().map_or_else(String::new, os_to_string);
-        let exe_ext = path.extension().map_or_else(String::new, os_to_string);
+        let exe_dir = path
+            .parent()
+            .map(path_to_string)
+            .transpose()?
+            .unwrap_or_else(|| ".".into());
+        let exe_filename = path
+            .file_name()
+            .map(os_to_string)
+            .transpose()?
+            .unwrap_or_default();
+        let exe_filename_noext = path
+            .file_stem()
+            .map(os_to_string)
+            .transpose()?
+            .unwrap_or_default();
+        let exe_ext = path
+            .extension()
+            .map(os_to_string)
+            .transpose()?
+            .unwrap_or_default();
         let exe_ext_dot = if exe_ext.is_empty() {
             String::new()
         } else {
@@ -627,14 +701,14 @@ impl RuntimePaths {
         Ok(Self {
             exe_drive: path_drive(&exe_path).to_owned(),
             exe_root: path_root(&exe_path).to_owned(),
-            launch_cwd: path_to_string(&env::current_dir()?),
-            temp_dir: env_var_or_empty("TEMP"),
-            home_dir: env_var_or_empty("USERPROFILE"),
-            appdata_dir: env_var_or_empty("APPDATA"),
-            localappdata_dir: env_var_or_empty("LOCALAPPDATA"),
-            programdata_dir: env_var_or_empty("ProgramData"),
-            program_files_dir: env_var_or_empty("ProgramFiles"),
-            program_files_x86_dir: env_var_or_empty("ProgramFiles(x86)"),
+            launch_cwd: path_to_string(&env::current_dir()?)?,
+            temp_dir: path_to_string(&env::temp_dir())?,
+            home_dir: env_var_or_empty("USERPROFILE")?,
+            appdata_dir: env_var_or_empty("APPDATA")?,
+            localappdata_dir: env_var_or_empty("LOCALAPPDATA")?,
+            programdata_dir: env_var_or_empty("ProgramData")?,
+            program_files_dir: env_var_or_empty("ProgramFiles")?,
+            program_files_x86_dir: env_var_or_empty("ProgramFiles(x86)")?,
             documents_dir: user_dirs.documents,
             downloads_dir: user_dirs.downloads,
             desktop_dir: user_dirs.desktop,
@@ -650,16 +724,19 @@ impl RuntimePaths {
     }
 }
 
-fn os_to_string(value: &std::ffi::OsStr) -> String {
-    value.to_string_lossy().into_owned()
+fn os_to_string(value: &OsStr) -> Result<String> {
+    value
+        .to_str()
+        .map(str::to_owned)
+        .ok_or(Error::WindowsTextMustBeUnicode)
 }
 
-fn path_to_string(value: &Path) -> String {
-    value.as_os_str().to_string_lossy().into_owned()
+fn path_to_string(value: &Path) -> Result<String> {
+    os_to_string(value.as_os_str())
 }
 
-fn env_var_or_empty(name: &str) -> String {
-    env::var_os(name).map_or_else(String::new, |value| value.to_string_lossy().into_owned())
+fn env_var_or_empty(name: &str) -> Result<String> {
+    env::var_os(name).map_or_else(|| Ok(String::new()), |value| os_to_string(&value))
 }
 
 #[derive(Default)]
@@ -670,12 +747,12 @@ struct KnownUserDirs {
 }
 
 impl KnownUserDirs {
-    fn init() -> Self {
-        Self {
-            documents: known_user_folder_or_empty(&FOLDER_ID_DOCUMENTS),
-            downloads: known_user_folder_or_empty(&FOLDER_ID_DOWNLOADS),
-            desktop: known_user_folder_or_empty(&FOLDER_ID_DESKTOP),
-        }
+    fn init() -> Result<Self> {
+        Ok(Self {
+            documents: known_user_folder_or_empty(&FOLDER_ID_DOCUMENTS)?,
+            downloads: known_user_folder_or_empty(&FOLDER_ID_DOWNLOADS)?,
+            desktop: known_user_folder_or_empty(&FOLDER_ID_DESKTOP)?,
+        })
     }
 }
 
@@ -723,7 +800,7 @@ unsafe extern "system" {
     fn CoTaskMemFree(memory: *mut c_void);
 }
 
-fn known_user_folder_or_empty(folder: &Guid) -> String {
+fn known_user_folder_or_empty(folder: &Guid) -> Result<String> {
     #[cfg(windows)]
     {
         let mut raw_path = ptr::null_mut();
@@ -734,10 +811,10 @@ fn known_user_folder_or_empty(folder: &Guid) -> String {
                 // SAFETY: any allocation returned through this API uses the COM task allocator.
                 unsafe { CoTaskMemFree(raw_path.cast()) };
             }
-            return String::new();
+            return Ok(String::new());
         }
         if raw_path.is_null() {
-            return String::new();
+            return Ok(String::new());
         }
         let mut length = 0usize;
         // SAFETY: a successful SHGetKnownFolderPath returns a NUL-terminated allocation.
@@ -747,7 +824,8 @@ fn known_user_folder_or_empty(folder: &Guid) -> String {
             }
         }
         // SAFETY: the preceding scan found the terminating NUL within the API allocation.
-        let value = String::from_utf16_lossy(unsafe { slice::from_raw_parts(raw_path, length) });
+        let value = String::from_utf16(unsafe { slice::from_raw_parts(raw_path, length) })
+            .map_err(|_| Error::WindowsTextMustBeUnicode);
         // SAFETY: SHGetKnownFolderPath allocates with the COM task allocator.
         unsafe { CoTaskMemFree(raw_path.cast()) };
         value
@@ -755,7 +833,7 @@ fn known_user_folder_or_empty(folder: &Guid) -> String {
     #[cfg(not(windows))]
     {
         let _ = folder;
-        String::new()
+        Ok(String::new())
     }
 }
 
@@ -777,7 +855,7 @@ pub enum WindowsSubsystem {
 pub struct Config {
     pub kill_children_on_exit: bool,
     pub cwd: String,
-    pub command: Vec<String>,
+    pub command: Vec<OsString>,
     pub env: Vec<EnvVar>,
 }
 
@@ -889,6 +967,40 @@ pub fn windows_subsystem_from_pe_bytes(bytes: &[u8]) -> Result<WindowsSubsystem>
     })
 }
 
+pub fn pe_has_certificate_table(bytes: &[u8]) -> Result<bool> {
+    if bytes.get(..2) != Some(b"MZ".as_slice()) {
+        return Err(Error::InvalidPeFile);
+    }
+    let pe_offset = usize::try_from(read_u32(bytes, 0x3c).ok_or(Error::InvalidPeFile)?)
+        .map_err(|_| Error::InvalidPeFile)?;
+    let optional_offset = pe_offset.checked_add(24).ok_or(Error::InvalidPeFile)?;
+    if bytes
+        .get(pe_offset..optional_offset)
+        .and_then(|header| header.get(..4))
+        != Some(b"PE\0\0")
+    {
+        return Err(Error::InvalidPeFile);
+    }
+    let optional_size = usize::from(read_u16(bytes, pe_offset + 20).ok_or(Error::InvalidPeFile)?);
+    let directories_offset = match read_u16(bytes, optional_offset) {
+        Some(0x10b) => 96usize,
+        Some(0x20b) => 112usize,
+        _ => return Err(Error::InvalidPeFile),
+    };
+    let security_offset = directories_offset
+        .checked_add(4 * 8)
+        .ok_or(Error::InvalidPeFile)?;
+    if optional_size < security_offset + 8 {
+        return Ok(false);
+    }
+    let directory_offset = optional_offset
+        .checked_add(security_offset)
+        .ok_or(Error::InvalidPeFile)?;
+    let certificate_pointer = read_u32(bytes, directory_offset).ok_or(Error::InvalidPeFile)?;
+    let certificate_size = read_u32(bytes, directory_offset + 4).ok_or(Error::InvalidPeFile)?;
+    Ok(certificate_pointer != 0 || certificate_size != 0)
+}
+
 pub fn set_windows_subsystem(path: &Path, subsystem: WindowsSubsystem) -> Result<()> {
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     let metadata = file.metadata()?;
@@ -960,10 +1072,30 @@ pub fn validate_config_bytes(bytes: &[u8]) -> Result<()> {
         .map_err(|_| Error::ConfigMustBeUtf8)
 }
 
+pub fn validate_stampable_config(bytes: &[u8]) -> Result<()> {
+    validate_config_bytes(bytes)?;
+    let normalized = normalize_config_bytes(bytes);
+    if find_bytes(normalized, CONFIG_START_MARKER).is_some()
+        || find_bytes(normalized, CONFIG_END_MARKER).is_some()
+    {
+        return Err(Error::ReservedOverlayMarkerInConfig);
+    }
+
+    let text = std::str::from_utf8(normalized).map_err(|_| Error::ConfigMustBeUtf8)?;
+    let scanned = template_scan::scan_with_random_sentinels(text)?;
+    reject_duplicate_keys(&scanned.json)?;
+    JsonParser::parse(&scanned.json)?;
+
+    for sentinel in &scanned.sentinels {
+        template_expr::parse(&sentinel.expression)?;
+    }
+    Ok(())
+}
+
 pub struct ParseConfigOptions<'a> {
     pub paths: &'a RuntimePaths,
     pub args0: &'a str,
-    pub args: &'a [String],
+    pub args: &'a [OsString],
     pub env_map: &'a mut EnvMap,
 }
 
@@ -1116,7 +1248,7 @@ fn eval_command(
     value: &JsonValue,
     context: &mut template_expr::EvalContext<'_>,
     sentinels: &[template_scan::Sentinel],
-) -> Result<Vec<String>> {
+) -> Result<Vec<OsString>> {
     let array = value.as_array().ok_or(Error::CommandMustBeArray)?;
     if array.is_empty() {
         return Err(Error::CommandMustNotBeEmpty);
@@ -1133,12 +1265,16 @@ fn eval_command(
                 }
             }
             JsonValue::String(raw) => {
-                command.push(eval_template_string(raw, context, sentinels)?);
+                command.push(eval_template_string(raw, context, sentinels)?.into());
             }
             _ => return Err(Error::CommandEntriesMustBeStrings),
         }
     }
-    Ok(command)
+    if command.is_empty() {
+        Err(Error::CommandMustNotBeEmpty)
+    } else {
+        Ok(command)
+    }
 }
 
 fn eval_template_string(
@@ -1805,7 +1941,7 @@ mod tests {
     #[test]
     fn parse_config_expands_paths_and_argument_splices() {
         let mut environment = EnvMap::default();
-        let arguments = ["one", "two"].map(str::to_owned);
+        let arguments = ["one", "two"].map(OsString::from);
         let config = parse_config_with_options(
             br#"{
                 "cwd":"@{exe_dir:parent:join("app")}",
@@ -1876,7 +2012,7 @@ mod tests {
     #[test]
     fn args_as_json_populates_env_and_single_quoted_powershell_source() {
         let mut environment = EnvMap::default();
-        let arguments = ["a'b", "x\"y", "dollar$backtick`", "line\r\nnext"].map(str::to_owned);
+        let arguments = ["a'b", "x\"y", "dollar$backtick`", "line\r\nnext"].map(OsString::from);
         let config = parse_config_with_options(
             br#"{
               "env":{"__ARGS_AS_JSON__":"@{args_as_json}"},
@@ -1893,7 +2029,10 @@ mod tests {
         let expected =
             r#"["a\u0027b","x\u0022y","dollar\u0024backtick\u0060","line\u000d\u000anext"]"#;
         assert_eq!(config.env[0].value, expected);
-        assert_eq!(config.command[2], format!("$ArgsJson='{expected}'"));
+        assert_eq!(
+            config.command[2].to_str(),
+            Some(format!("$ArgsJson='{expected}'").as_str())
+        );
     }
 
     #[test]
@@ -1912,7 +2051,7 @@ mod tests {
             ),
             Err(Error::MissingEnvironmentVariable)
         ));
-        let arguments = ["only-one".to_owned()];
+        let arguments = [OsString::from("only-one")];
         assert!(matches!(
             parse_config_with_options(
                 br#"{"error_on_arg_out_of_bounds":true,"command":["@{args[2]}"]}"#,
@@ -1942,6 +2081,20 @@ mod tests {
             Err(Error::DuplicateJsonKey)
         ));
         assert!(matches!(
+            parse_config(
+                br#"{"command":["first"],"\u0063ommand":["second"]}"#,
+                &paths
+            ),
+            Err(Error::DuplicateJsonKey)
+        ));
+        assert!(matches!(
+            parse_config(
+                br#"{"env":{"PATH":"one","\u0050ATH":"two"},"command":["x"]}"#,
+                &paths
+            ),
+            Err(Error::DuplicateJsonKey)
+        ));
+        assert!(matches!(
             parse_config(br#"{"env":{"@{exe_dir}":"x"},"command":["x"]}"#, &paths),
             Err(Error::TemplateInObjectKey)
         ));
@@ -1951,7 +2104,7 @@ mod tests {
     fn raw_numeric_command_sentinels_only_accept_lists() {
         let paths = test_paths();
         let mut environment = EnvMap::default();
-        let arguments = ["a", "b"].map(str::to_owned);
+        let arguments = ["a", "b"].map(OsString::from);
         assert!(matches!(
             parse_config_with_options(
                 br#"{"command":[@{args[1]}]}"#,
@@ -1980,6 +2133,69 @@ mod tests {
             parse_config(br#"{"command":[1]}"#, &paths),
             Err(Error::CommandEntriesMustBeStrings)
         ));
+        let mut empty_environment = EnvMap::default();
+        assert!(matches!(
+            parse_config_with_options(
+                br#"{"command":[@{args}]}"#,
+                ParseConfigOptions {
+                    paths: &paths,
+                    args0: "",
+                    args: &[],
+                    env_map: &mut empty_environment,
+                }
+            ),
+            Err(Error::CommandMustNotBeEmpty)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_argument_splices_preserve_unpaired_utf16() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let paths = test_paths();
+        let mut environment = EnvMap::default();
+        let arguments = [OsString::from_wide(&[0xd800, b'A' as u16])];
+        let config = parse_config_with_options(
+            br#"{"command":["cmd.exe",@{args}]}"#,
+            ParseConfigOptions {
+                paths: &paths,
+                args0: "",
+                args: &arguments,
+                env_map: &mut environment,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            config.command[1].encode_wide().collect::<Vec<_>>(),
+            [0xd800, 65]
+        );
+    }
+
+    #[test]
+    fn stampable_config_rejects_reserved_markers_and_invalid_structure() {
+        for marker in [MARKER_UUID, END_MARKER_UUID] {
+            let config = format!(r#"{{"env":{{"VALUE":"{marker}"}},"command":["x"]}}"#);
+            assert!(matches!(
+                validate_stampable_config(config.as_bytes()),
+                Err(Error::ReservedOverlayMarkerInConfig)
+            ));
+        }
+        assert!(matches!(
+            validate_stampable_config(br#"{"command":["#),
+            Err(Error::InvalidJson | Error::SyntaxError)
+        ));
+        validate_stampable_config(br#"{"command":["cmd.exe"]}"#).unwrap();
+    }
+
+    #[test]
+    fn certificate_table_detection_rejects_signed_launcher_inputs() {
+        let mut bytes = minimal_pe(0x20b, PE_SUBSYSTEM_CONSOLE);
+        assert!(!pe_has_certificate_table(&bytes).unwrap());
+        let security_directory = 0x80 + 24 + 112 + 4 * 8;
+        bytes[security_directory..security_directory + 4].copy_from_slice(&400u32.to_le_bytes());
+        bytes[security_directory + 4..security_directory + 8].copy_from_slice(&32u32.to_le_bytes());
+        assert!(pe_has_certificate_table(&bytes).unwrap());
     }
 
     #[test]
@@ -2002,7 +2218,7 @@ mod tests {
     #[test]
     fn interpolation_removes_only_generated_wrapper_spaces() {
         let mut environment = EnvMap::default();
-        let arguments = ["alpha", "beta", "gamma"].map(str::to_owned);
+        let arguments = ["alpha", "beta", "gamma"].map(OsString::from);
         let config = parse_config_with_options(
             br#"{"command":["pre@{args[1]}post","@{args[2]} @{args[3]}","@@{literal}"]}"#,
             ParseConfigOptions {
@@ -2134,7 +2350,7 @@ mod tests {
         if !cfg!(windows) {
             return;
         }
-        let dirs = KnownUserDirs::init();
+        let dirs = KnownUserDirs::init().unwrap();
         for value in [dirs.documents, dirs.downloads, dirs.desktop] {
             assert!(value.is_empty() || Path::new(&value).is_absolute());
         }
@@ -2229,7 +2445,7 @@ mod tests {
     #[test]
     fn malformed_adjacency_around_raw_templates_remains_invalid_json() {
         let mut environment = EnvMap::default();
-        let arguments = ["a", "b"].map(str::to_owned);
+        let arguments = ["a", "b"].map(OsString::from);
         assert!(matches!(
             parse_config_with_options(
                 br#"{"command":[1@{args}]}"#,

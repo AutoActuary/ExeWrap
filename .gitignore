@@ -1,4 +1,5 @@
-target/
-*.exe
-*.pdb
-!examples/*.json
+/target/
+/target-dynamic/
+/.zig-cache/
+/zig-out/
+/dist/

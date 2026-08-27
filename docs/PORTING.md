@@ -49,7 +49,7 @@ the behavioral contract. Bun describes the completed process in
 | `src/template_expr.zig` | `src/template_expr.rs` | Same tokenizer, parser, 1-based indexing, inclusive slices, transforms, and JSON escaping. |
 | `src/root.zig` | `src/lib.rs` | Same ordered config walk, duplicate rejection, PE overlay handling, and runtime metadata. |
 | `src/main.zig` | `src/launcher.rs` plus two thin binaries | One implementation, compiled with console and GUI PE subsystems. |
-| `src/stamp.zig` | `src/bin/exewrap-stamper.rs` | Same CLI grammar, restamping, subsystem patching, and icon resources. |
+| `src/stamp.zig` | `src/stamp.rs` plus the thin `src/bin/exewrap-stamper.rs` entry point | Same CLI grammar, restamping, subsystem patching, and icon resources. |
 | `build.zig*` | `Cargo.toml`, `rust-toolchain.toml` | Preserve three binary names and all Windows targets. |
 
 ## Type and idiom map
@@ -127,10 +127,11 @@ The final audit also corrected bounded-read TOCTOU gaps, a resource-update
 handle double-finalization path, quadratic membership checks, low-entropy
 template sentinels, and Windows command-resolution and error-tag differences.
 
-The final audit used Rust 1.98.0. Static-runtime release sizes are:
+The final audit used Rust 1.98.0. Published v3.0.0 static-runtime release sizes
+are:
 
-| Binary | Rust x64 bytes | Rust x86 bytes |
-| --- | ---: | ---: |
-| `ExeWrap-console.exe` | 372,736 | 322,560 |
-| `ExeWrap-windowed.exe` | 372,736 | 322,560 |
-| `ExeWrap-stamper.exe` | 230,400 | 203,776 |
+| Binary | Rust x64 bytes | Rust x86 bytes | Rust ARM64 bytes |
+| --- | ---: | ---: | ---: |
+| `ExeWrap-console.exe` | 374,784 | 326,656 | 353,792 |
+| `ExeWrap-windowed.exe` | 374,784 | 326,656 | 353,792 |
+| `ExeWrap-stamper.exe` | 232,960 | 207,872 | 229,376 |

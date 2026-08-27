@@ -1,8 +1,8 @@
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEBUG:NONE"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "control-flow-guard=yes", "-C", "link-arg=/DEBUG:NONE", "-C", "link-arg=/Brepro"]
 
 [target.i686-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEBUG:NONE"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "control-flow-guard=yes", "-C", "link-arg=/DEBUG:NONE", "-C", "link-arg=/Brepro"]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEBUG:NONE"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "control-flow-guard=yes", "-C", "link-arg=/DEBUG:NONE", "-C", "link-arg=/Brepro"]
