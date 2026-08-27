@@ -16,7 +16,7 @@ The stamped executable:
 4. Sets the child working directory.
 5. Starts the configured argv array.
 
-## Get The Tools
+## Get the tools
 
 Published GitHub releases provide builds for:
 
@@ -30,10 +30,13 @@ Each release build contains:
 ExeWrap-console.exe
 ExeWrap-windowed.exe
 ExeWrap-stamper.exe
+LICENSE
+README.md
 ```
 
 Use `ExeWrap-console.exe` for PATH commands, CI tools, and scripts where the
-parent shell should wait and receive the child exit code. Use
+parent shell should wait and receive the v2-compatible low 8 bits of the child
+exit code. Use
 `ExeWrap-windowed.exe` for Explorer shortcuts, file associations, protocol
 handlers, and background GUI launches that should not present a console window.
 Use `ExeWrap-stamper.exe` to make your app-specific executable.
@@ -66,7 +69,15 @@ subsystem of the `--launcher` input. Use `console` for command-line shims and
 
 You can stamp either a base launcher or an already stamped executable. When
 restamping, the stamper replaces the existing embedded config instead of
-appending another copy.
+appending another copy. It validates UTF-8, template syntax, JSON syntax, and
+the two reserved overlay delimiters before creating a staged output. The final
+replacement is atomic, so a failed stamp leaves an existing output unchanged.
+
+Signed launcher inputs are not supported. The stamper rejects a PE file with a
+certificate table instead of creating an executable whose signature says
+nothing reliable about the appended config. Authenticode-signing the stamped
+output is also unsupported because the certificate table changes where the
+runtime begins its overlay search.
 
 Run the stamped output:
 
@@ -77,7 +88,7 @@ bundle\bin\my-tool.exe --some-user-arg value
 The stamped exe can be copied or renamed. Runtime paths are resolved from the
 final exe location, so `@{exe_dir}` follows the stamped file.
 
-## Minimal Config
+## Minimal config
 
 Config files are JSON with a small overlay template syntax. Use `@{name}` to
 insert launcher values, and chain transforms such as
@@ -112,6 +123,10 @@ lookup happens before the config's `env` edits are passed to the child. Relative
 command paths containing a directory component are resolved from `cwd` and do
 not search `PATH`.
 
+Treat bare command names as unsafe when an untrusted process can control `cwd`,
+especially for an elevated launcher. A file in `cwd` wins before `PATH`. Use an
+explicit executable-relative path such as `@{exe_dir}\app.exe` in that case.
+
 The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
 object keys. ExeWrap config is order-aware templated JSON-like input, not
 arbitrary JSON where object order is irrelevant. `command` is required and must
@@ -129,7 +144,7 @@ caller's directory, set `cwd` explicitly:
 }
 ```
 
-## Command Arrays
+## Command arrays
 
 The launcher starts the child process from an argv array. Each item is one
 argument:
@@ -505,7 +520,7 @@ killed, Windows closes the job handle and terminates the child process tree.
 }
 ```
 
-## Stamp Without The Helper
+## Stamp without the helper
 
 `ExeWrap-stamper.exe` is not required by the file format. Other tools can
 produce the same output by doing the same byte-level steps:
@@ -522,13 +537,15 @@ produce the same output by doing the same byte-level steps:
    marker `ce3beca3-7ed2-40a4-9133-f82198be1d7b` after the config first.
 
 When the config is the final thing in the file, the end marker is not needed.
+Neither marker byte sequence may occur in the config bytes. The official
+stamper rejects such input before touching the output.
 
 For PE launchers, the runtime searches the PE overlay for the last start marker
 so marker-like bytes inside the executable image are ignored. Config bytes run
 from after that marker to the following end marker, or to the end of the file
 when no end marker is present.
 
-## Build From Source
+## Build from source
 
 Most users should start from the release binaries. Build from source when you
 are changing the launcher or need a local debug build.
@@ -553,7 +570,8 @@ The release profile is size-oriented: `opt-level = "z"`, aborting panics,
 whole-program LTO, one codegen unit, and stripped symbols. It emits both
 console-subsystem and windowed-subsystem launcher bases. Windows targets link
 the MSVC runtime statically so the executables do not need a separately
-installed Visual C++ runtime.
+installed Visual C++ runtime. Release target flags also enable Control Flow
+Guard and reproducible linker output.
 
 Use a debug build when diagnosing launcher behavior:
 

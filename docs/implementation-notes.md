@@ -6,7 +6,7 @@ implementation is shaped the way it is. The user-facing config guide lives in
 the README; this file focuses on parser, evaluator, overlay, and process
 behavior.
 
-## Code Map
+## Code map
 
 | Area | File |
 | --- | --- |
@@ -17,7 +17,7 @@ behavior.
 | Stamping helper | [`src/stamp.rs`](../src/stamp.rs) |
 | Build profiles and executable targets | [`Cargo.toml`](../Cargo.toml) |
 
-## Why Use A PE Overlay
+## Why use a PE overlay
 
 Windows PE executables can carry extra bytes after the mapped image. The launcher
 uses that overlay area as the config carrier:
@@ -53,12 +53,22 @@ The default stamp helper omits the end marker because the config is written at
 EOF. Other stampers can write the end marker when they need to append unrelated
 data after the config.
 
-The stamp helper applies optional Windows resources, such as icons, before it
-patches a requested PE subsystem override and appends the overlay. Resource
-updates can rewrite the PE file, so subsystem patching happens after resource
-updates. The overlay is always the final write.
+Both UUID byte sequences are reserved delimiters. The official stamper rejects
+config bytes containing either sequence before it creates a staged output. This
+keeps the framing unchanged and prevents config data from impersonating a
+delimiter.
 
-## Why Templated JSON Instead Of A Script
+The stamp helper builds a same-directory staging file, applies optional Windows
+resources, patches a requested PE subsystem override, appends the overlay, and
+atomically replaces the destination. Resource updates can rewrite the PE file,
+so subsystem patching happens after resource updates. A failure leaves an
+existing destination unchanged.
+
+The stamper rejects launcher inputs with a PE certificate table. Signing the
+stamped output is also unsupported because adding the certificate table changes
+the boundary from which the runtime searches for the active overlay.
+
+## Why templated JSON instead of a script
 
 The original spec deliberately keeps the config declarative:
 
@@ -71,11 +81,7 @@ The original spec deliberately keeps the config declarative:
 This keeps launch behavior deterministic and keeps failures close to malformed
 configuration rather than runtime script behavior.
 
-Lua or another embedded language can remain a future escape hatch if users need
-discovery, fallback chains, or conditionals. It should not be added until real
-configs prove that the declarative model is insufficient.
-
-## Why The `@{...}` Delimiter
+## Why the `@{...}` delimiter
 
 Bare braces are common in shell snippets, especially PowerShell script blocks:
 
@@ -94,11 +100,11 @@ parenthesized transform arguments. This lets expressions contain values such as:
 @{env["PATH"]:prepend_env(exe_dir:parent:join("python"))}
 ```
 
-## Three Processing Passes
+## Three processing passes
 
 The implementation follows the processing model from the spec.
 
-### Pass 1: Template-Aware Scan
+### Pass 1: Template-aware scan
 
 `src/template_scan.rs` scans raw UTF-8 bytes before JSON parsing. It replaces
 each template expression with a random 39-digit decimal sentinel and records:
@@ -120,7 +126,7 @@ string templates valid JSON string content. The wrapper spaces make malformed
 adjacency such as `1@{args}` remain invalid after preprocessing instead of
 silently merging into another JSON number.
 
-### Pass 2: JSON Parse And Structural Validation
+### Pass 2: JSON parse and structural validation
 
 `src/lib.rs` rejects duplicate keys before parsing. Duplicate keys are valid in
 some loose JSON readers but would make source-order environment semantics
@@ -133,11 +139,11 @@ floating-point type, and object source order remains available to the config
 walker. Object keys are checked for generated spaced sentinels and rejected if
 a template appeared inside a key.
 
-### Pass 3: Config Walk And Evaluation
+### Pass 3: Config walk and evaluation
 
 The config walker evaluates sentinels in values:
 
-- A raw `.number_string` sentinel can replace a command-array item, and it must
+- A raw `JsonValue::Number` sentinel can replace a command-array item, and it must
   evaluate to a list of strings.
 - A spaced sentinel embedded in a JSON string can replace a whole string or part
   of a string, and it must evaluate to one string.
@@ -150,7 +156,7 @@ Environment entries are evaluated and immediately written back into the mutable
 environment map. Later environment entries and the command array can read the
 updated values.
 
-## Expression Parser And Typed Values
+## Expression parser and typed values
 
 `src/template_expr.rs` uses a tokenizer and recursive-descent parser instead of
 ad hoc string splitting. That is necessary because transform arguments can be
@@ -235,10 +241,10 @@ The config can opt into errors with:
 }
 ```
 
-These flags are intentionally top-level, not per-expression, to keep the first
-version of the language small.
+These flags are intentionally top-level, not per-expression, to keep the
+language small.
 
-## Windows Process Choices
+## Windows process choices
 
 Windows decides whether a parent shell waits for a process from the launched
 executable's PE subsystem before ExeWrap can read its embedded config. That
@@ -249,7 +255,7 @@ The build emits two thin binaries backed by the same `src/launcher.rs` source:
 
 - `ExeWrap-console.exe` uses the Windows CUI subsystem. It is suitable for PATH
   command shims, CI, scripts, and tools where parent shells should wait and
-  receive the child exit code.
+  receive the v2-compatible low 8 bits of the child exit code.
 - `ExeWrap-windowed.exe` uses the Windows GUI subsystem. It is suitable for
   Explorer shortcuts, protocol handlers, file associations, and background GUI
   launchers.
@@ -282,8 +288,10 @@ intended to start a process that outlives the launcher.
 
 ## UTF-8 And BOM Policy
 
-The stamp helper validates config bytes before writing the output file. The
-runtime validates again after reading the embedded overlay.
+Before staging an output, the stamp helper validates encoding, rejects reserved
+overlay delimiters, parses the template and JSON syntax, and rejects duplicate
+decoded keys. Runtime parsing then validates the complete schema and evaluates
+values that depend on arguments, environment variables, and paths.
 
 The implementation accepts a leading UTF-8 BOM after leading whitespace and then
 parses the remaining bytes. Non-UTF-8 config bytes are rejected before JSON
@@ -306,11 +314,10 @@ The implementation intentionally keeps several items small or explicit:
   reading, not only from an earlier metadata snapshot.
 - JSON nesting is capped at 128 levels so hostile input cannot exhaust the
   process stack. Valid ExeWrap configs require only a few levels.
-- The launcher is Windows-focused. Some path transforms handle drive and UNC
-  roots, while cross-platform semantics should be reviewed before promising
-  Linux or macOS behavior.
+- ExeWrap supports Windows. Non-Windows compilation exists for parser tests, not
+  as a supported launcher or stamper runtime.
 
-## Test Coverage Intent
+## Test coverage intent
 
 The tests are split by layer:
 

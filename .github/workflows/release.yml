@@ -7,11 +7,41 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
+  verify:
+    name: Verify release source
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Require release tag to match Cargo version
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 --no-deps | ConvertFrom-Json
+          $expectedTag = "v$($metadata.packages[0].version)"
+          $actualTag = "${{ github.event.release.tag_name }}"
+          if ($actualTag -ne $expectedTag) {
+            throw "Release tag $actualTag does not match Cargo version $expectedTag."
+          }
+
+      - name: Install lint components
+        run: rustup component add clippy rustfmt
+
+      - name: Verify tests, lints, and formatting
+        run: |
+          cargo test --locked --release --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo fmt --all --check
+
   build-release:
     name: Release ${{ matrix.label }}
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
+    needs: verify
 
     strategy:
       fail-fast: false
@@ -19,17 +49,26 @@ jobs:
         include:
           - label: windows-x64
             target: x86_64-pc-windows-msvc
+            runner: windows-latest
           - label: windows-x86
             target: i686-pc-windows-msvc
+            runner: windows-latest
           - label: windows-arm64
             target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Build release executables
         run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Smoke-test release executables
+        shell: pwsh
+        env:
+          EXEWRAP_BIN_DIR: target/${{ matrix.target }}/release
+        run: ./tests/smoke-windows.ps1
 
       - name: Package executables
         shell: pwsh
@@ -41,9 +80,20 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/ExeWrap-console.exe $packageDir
           Copy-Item target/${{ matrix.target }}/release/ExeWrap-windowed.exe $packageDir
           Copy-Item target/${{ matrix.target }}/release/ExeWrap-stamper.exe $packageDir
+          Copy-Item LICENSE $packageDir
+          Copy-Item README.md $packageDir
+          $zipEpoch = [datetime]::new(1980, 1, 1, 0, 0, 0, [DateTimeKind]::Utc)
+          Get-ChildItem -LiteralPath $packageDir | ForEach-Object { $_.LastWriteTimeUtc = $zipEpoch }
           Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath "dist/$assetBase.zip" -Force
           $hash = Get-FileHash "dist/$assetBase.zip" -Algorithm SHA256
           "$($hash.Hash.ToLowerInvariant())  $assetBase.zip" | Set-Content "dist/$assetBase.zip.sha256" -Encoding ascii
+
+      - name: Attest release archives
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.zip.sha256
 
       - name: Upload release assets
         shell: pwsh
@@ -52,4 +102,4 @@ jobs:
         run: |
           $tag = "${{ github.event.release.tag_name }}"
           $assetBase = "ExeWrap-$tag-${{ matrix.label }}"
-          gh release upload $tag "dist/$assetBase.zip" "dist/$assetBase.zip.sha256" --clobber
+          gh release upload $tag "dist/$assetBase.zip" "dist/$assetBase.zip.sha256"
