@@ -1,0 +1,14 @@
+zig_file	zig_type	field	classification	rust_type	evidence
+root.zig	RuntimePaths	all text fields	OWNED	String	constructed at startup and retained through config evaluation
+root.zig	Config	cwd	OWNED	String	may be produced by template evaluation and is retained through child launch
+root.zig	Config	command	OWNED	Vec<String>	parser output is retained through child launch
+root.zig	Config	env	OWNED	Vec<EnvVar>	ordered evaluated edits are retained with config
+template_scan.zig	ScanResult	json	OWNED	String	scanner constructs the transformed JSON buffer
+template_scan.zig	ScanResult	sentinels	OWNED	Vec<Sentinel>	keys and expressions are constructed by the scanner
+template_expr.zig	Expression	transforms	OWNED	Vec<Transform>	parser constructs and owns the expression tree
+template_expr.zig	Argument	expression	OWNED	Box<Expression>	nested expression has one owning parent
+template_expr.zig	EvalContext	metadata	BORROW_PARAM	&Metadata	valid for one config evaluation
+template_expr.zig	EvalContext	env	BORROW_PARAM	&mut ordered environment map	mutated in source order during one config evaluation
+template_expr.zig	EvalContext	args	BORROW_PARAM	&[String]	process arguments outlive config evaluation
+main.zig	Win32 job handle	job	OWNED	JobHandle guard	closed exactly once after child wait or on any error
+stamp.zig	resource update handle	handle	OWNED	ResourceUpdate guard	commit once on success, discard once on failure

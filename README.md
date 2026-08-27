@@ -105,6 +105,13 @@ code pages, and other non-utf-8 byte sequences are rejected.
 | `error_on_missing_env` | No | boolean | Makes missing `@{env["NAME"]}` lookups fail. Otherwise missing env values resolve to an empty string. |
 | `error_on_arg_out_of_bounds` | No | boolean | Makes missing `@{args[N]}` lookups fail. Otherwise missing args resolve to an empty string. |
 
+On Windows, a bare `command[0]` is resolved from the configured `cwd` first and
+then from the launcher's parent-process `PATH`. Supported `PATHEXT` entries are
+`.BAT`, `.CMD`, `.COM`, and `.EXE`, in the parent's configured order. This
+lookup happens before the config's `env` edits are passed to the child. Relative
+command paths containing a directory component are resolved from `cwd` and do
+not search `PATH`.
+
 The launcher rejects unknown top-level keys, duplicate JSON keys, and templated
 object keys. ExeWrap config is order-aware templated JSON-like input, not
 arbitrary JSON where object order is irrelevant. `command` is required and must
@@ -230,8 +237,8 @@ why raw array entries such as `@{args}` and normal quotes in expressions such as
 | `documents_dir` | Current user's Documents known folder, when available. |
 | `downloads_dir` | Current user's Downloads known folder, when available. |
 | `desktop_dir` | Current user's Desktop known folder, when available. |
-| `os` | Zig OS tag, for example `windows`. |
-| `arch` | Zig CPU architecture tag, for example `x86_64`. |
+| `os` | Operating system tag, for example `windows`. |
+| `arch` | CPU architecture tag, for example `x86_64`. |
 | `dir_sep` | Directory separator. |
 | `path_sep` | Environment path-list separator. |
 
@@ -526,28 +533,32 @@ when no end marker is present.
 Most users should start from the release binaries. Build from source when you
 are changing the launcher or need a local debug build.
 
-Install Zig 0.15.2 or a compatible Zig version available on `PATH`.
+Install the Rust toolchain listed in `rust-toolchain.toml`. Rustup installs the
+three supported Windows targets automatically.
 
 ```powershell
-zig version
-zig build
+rustc --version
+cargo build --release
 ```
 
 The build writes:
 
 ```text
-zig-out\bin\ExeWrap-console.exe
-zig-out\bin\ExeWrap-windowed.exe
-zig-out\bin\ExeWrap-stamper.exe
+target\release\ExeWrap-console.exe
+target\release\ExeWrap-windowed.exe
+target\release\ExeWrap-stamper.exe
 ```
 
-The default build is size-oriented: `ReleaseSmall`, stripped, single-threaded,
-and emits both console-subsystem and windowed-subsystem launcher bases.
+The release profile is size-oriented: `opt-level = "z"`, aborting panics,
+whole-program LTO, one codegen unit, and stripped symbols. It emits both
+console-subsystem and windowed-subsystem launcher bases. Windows targets link
+the MSVC runtime statically so the executables do not need a separately
+installed Visual C++ runtime.
 
 Use a debug build when diagnosing launcher behavior:
 
 ```powershell
-zig build -Doptimize=Debug
+cargo build
 ```
 
 ## Troubleshooting

@@ -10,12 +10,12 @@ behavior.
 
 | Area | File |
 | --- | --- |
-| Launcher entry point, child process setup, Windows Job Object support | [`src/main.zig`](../src/main.zig) |
-| Overlay marker, config parsing, environment application, duplicate-key checks | [`src/root.zig`](../src/root.zig) |
-| Template-aware preprocessing scan and random sentinels | [`src/template_scan.zig`](../src/template_scan.zig) |
-| Template tokenizer, parser, evaluator, bases, and transforms | [`src/template_expr.zig`](../src/template_expr.zig) |
-| Stamping helper | [`src/stamp.zig`](../src/stamp.zig) |
-| Build graph and executable settings | [`build.zig`](../build.zig) |
+| Launcher entry point, child process setup, Windows Job Object support | [`src/launcher.rs`](../src/launcher.rs) |
+| Overlay marker, config parsing, environment application, duplicate-key checks | [`src/lib.rs`](../src/lib.rs) |
+| Template-aware preprocessing scan and random sentinels | [`src/template_scan.rs`](../src/template_scan.rs) |
+| Template tokenizer, parser, evaluator, bases, and transforms | [`src/template_expr.rs`](../src/template_expr.rs) |
+| Stamping helper | [`src/stamp.rs`](../src/stamp.rs) |
+| Build profiles and executable targets | [`Cargo.toml`](../Cargo.toml) |
 
 ## Why Use A PE Overlay
 
@@ -100,7 +100,7 @@ The implementation follows the processing model from the spec.
 
 ### Pass 1: Template-Aware Scan
 
-`src/template_scan.zig` scans raw UTF-8 bytes before JSON parsing. It replaces
+`src/template_scan.rs` scans raw UTF-8 bytes before JSON parsing. It replaces
 each template expression with a random 39-digit decimal sentinel and records:
 
 - The bare sentinel key.
@@ -122,15 +122,16 @@ silently merging into another JSON number.
 
 ### Pass 2: JSON Parse And Structural Validation
 
-`src/root.zig` rejects duplicate keys before parsing. Duplicate keys are valid in
+`src/lib.rs` rejects duplicate keys before parsing. Duplicate keys are valid in
 some loose JSON readers but would make source-order environment semantics
 ambiguous, so they are a config error here.
 
-After duplicate-key rejection, the transformed bytes are parsed with Zig's JSON
-parser using `.parse_numbers = false`. JSON numbers therefore remain
-`.number_string` values instead of becoming fixed-size numeric types. Object
-keys are checked for generated spaced sentinels and rejected if a template
-appeared inside a key. Keys stay literal to keep config shape predictable.
+After duplicate-key rejection, ExeWrap's small in-tree JSON parser reads the
+transformed bytes. It retains number text verbatim and stores object entries in
+source order. Numeric sentinel text therefore does not pass through a
+floating-point type, and object source order remains available to the config
+walker. Object keys are checked for generated spaced sentinels and rejected if
+a template appeared inside a key.
 
 ### Pass 3: Config Walk And Evaluation
 
@@ -151,7 +152,7 @@ updated values.
 
 ## Expression Parser And Typed Values
 
-`src/template_expr.zig` uses a tokenizer and recursive-descent parser instead of
+`src/template_expr.rs` uses a tokenizer and recursive-descent parser instead of
 ad hoc string splitting. That is necessary because transform arguments can be
 quoted strings or nested expressions:
 
@@ -209,10 +210,13 @@ The implementation supports that behavior by updating the environment map as
 each entry is evaluated. The command array is evaluated after `env`, so command
 templates see the final edited environment.
 
-`env` is an ordered object. Object source order currently follows Zig's parsed
-object iteration behavior and is tested; maintainers should preserve this
-deliberately if the parser representation changes. Duplicate object keys are
-rejected so ordered evaluation cannot become ambiguous.
+`env` is an ordered object. The JSON parser keeps each object's entries in a
+vector, and the behavior is tested. Duplicate object keys are rejected so
+ordered evaluation cannot become ambiguous.
+
+Environment names use Windows ordinal Unicode case-insensitive comparison. An
+edit to `éxéwrap` therefore replaces an existing `ÉXÉWRAP` entry instead of
+emitting two names that Windows would treat as the same variable.
 
 ## Strictness Defaults
 
@@ -241,7 +245,7 @@ executable's PE subsystem before ExeWrap can read its embedded config. That
 means console-vs-windowed launcher behavior must be a build/stamp-time choice,
 not a runtime JSON field.
 
-The build emits two base launchers from the same `src/main.zig` source:
+The build emits two thin binaries backed by the same `src/launcher.rs` source:
 
 - `ExeWrap-console.exe` uses the Windows CUI subsystem. It is suitable for PATH
   command shims, CI, scripts, and tools where parent shells should wait and
@@ -261,6 +265,14 @@ stdio/window policy follows the stamped launcher's subsystem:
 - Console launchers inherit stdin/stdout/stderr and do not set
   `CREATE_NO_WINDOW`.
 - Windowed launchers ignore stdin/stdout/stderr and set `CREATE_NO_WINDOW`.
+
+Windows command discovery searches the configured child `cwd` before the
+launcher's parent-process `PATH`, honors the parent's supported `PATHEXT`
+entries in order, and does not use config-time child environment edits for
+executable discovery. Relative command paths with a directory component do not
+search `PATH`. Resolved `.bat` and `.cmd` scripts use the standard library's
+protected batch-command serialization; NUL, LF, and CR arguments are rejected
+as `InvalidBatchScriptArg`.
 
 `kill_children_on_exit` uses a Windows Job Object with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The child is spawned suspended, assigned to
@@ -285,12 +297,15 @@ The implementation intentionally keeps several items small or explicit:
   empty string when the current user profile folder cannot be resolved.
 - The scanner records source byte ranges for templates, but JSON parse errors
   are not yet remapped back to original template-source offsets.
-- Object-order environment evaluation depends on the current Zig JSON object
-  representation preserving iteration order. If the parser representation
-  changes, ordered `env` object evaluation must remain deliberate and tested.
-- Boolean options are read only when the JSON value is a boolean. Non-boolean
-  values are treated as absent by the current helper rather than producing a
-  dedicated type error.
+- Object-order environment evaluation depends on the in-tree JSON parser's
+  ordered object representation. If that representation changes, ordered
+  `env` evaluation must remain deliberate and tested.
+- Boolean options reject non-boolean values with field-specific config errors.
+- The stamper accepts config files up to 1 MiB and icon files up to 16 MiB. The
+  launcher reads executable images up to 512 MiB. Every limit is enforced while
+  reading, not only from an earlier metadata snapshot.
+- JSON nesting is capped at 128 levels so hostile input cannot exhaust the
+  process stack. Valid ExeWrap configs require only a few levels.
 - The launcher is Windows-focused. Some path transforms handle drive and UNC
   roots, while cross-platform semantics should be reviewed before promising
   Linux or macOS behavior.
@@ -299,16 +314,16 @@ The implementation intentionally keeps several items small or explicit:
 
 The tests are split by layer:
 
-- `src/template_scan.zig`: literal escapes, raw-value numeric sentinels, string
+- `src/template_scan.rs`: literal escapes, raw-value numeric sentinels, string
   sentinels, nested quotes/parentheses, sentinel key validation, and malformed
   templates.
-- `src/template_expr.zig`: tokenizer/parser behavior, base values, path/string
+- `src/template_expr.rs`: tokenizer/parser behavior, base values, path/string
   transforms, environment lookup strictness, argument slicing, env-list
   transforms, and wrong-type failures.
-- `src/root.zig`: UTF-8/BOM handling, overlay markers, config parsing, command
+- `src/lib.rs`: UTF-8/BOM handling, overlay markers, config parsing, command
   splicing, environment mutation order, strict failures, duplicate keys, object
   key templates, and unsafe list contexts.
 
 When extending the language, add tests at the lowest layer that owns the behavior
-and at least one integration test in `src/root.zig` if the feature changes config
+and at least one integration test in `src/lib.rs` if the feature changes config
 walking or child-command output.
