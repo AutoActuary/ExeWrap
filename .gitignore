@@ -1,6 +1,4 @@
-zig-cache/
-zig-out/
-.zig-cache/
+target/
 *.exe
 *.pdb
 !examples/*.json

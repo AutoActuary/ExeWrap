@@ -1,0 +1,40 @@
+[package]
+name = "exewrap"
+version = "3.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Portable executable wrapper for Windows"
+repository = "https://github.com/AutoActuary/ExeWrap"
+
+[[bin]]
+name = "ExeWrap-console"
+path = "src/bin/exewrap-console.rs"
+
+[[bin]]
+name = "ExeWrap-windowed"
+path = "src/bin/exewrap-windowed.rs"
+
+[[bin]]
+name = "ExeWrap-stamper"
+path = "src/bin/exewrap-stamper.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

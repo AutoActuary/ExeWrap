@@ -9,9 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  ZIG_VERSION: 0.15.2
-
 jobs:
   test:
     name: Test
@@ -21,21 +18,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Install Zig
-        shell: pwsh
-        run: |
-          $name = "zig-x86_64-windows-$env:ZIG_VERSION"
-          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
-          $dest = Join-Path $env:RUNNER_TEMP $name
-          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$name.zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
-          $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Check Rust version
+        run: rustc --version
 
-      - name: Check Zig version
-        run: zig version
+      - name: Install lint components
+        run: rustup component add clippy rustfmt
 
       - name: Run tests
-        run: zig build test
+        run: cargo test --locked --all-targets
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all --check
 
   build-windows:
     name: Build ${{ matrix.label }}
@@ -47,40 +43,32 @@ jobs:
       matrix:
         include:
           - label: windows-x64
-            target: x86_64-windows
+            target: x86_64-pc-windows-msvc
           - label: windows-x86
-            target: x86-windows
+            target: i686-pc-windows-msvc
           - label: windows-arm64
-            target: aarch64-windows
+            target: aarch64-pc-windows-msvc
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Install Zig
-        shell: pwsh
-        run: |
-          $name = "zig-x86_64-windows-$env:ZIG_VERSION"
-          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
-          $dest = Join-Path $env:RUNNER_TEMP $name
-          Invoke-WebRequest -Uri "https://ziglang.org/download/$env:ZIG_VERSION/$name.zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
-          $dest | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Build Windows executables
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+        run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Run Windows x64 smoke tests
-        if: matrix.target == 'x86_64-windows'
+      - name: Run Windows smoke tests
+        if: matrix.target != 'aarch64-pc-windows-msvc'
         shell: pwsh
+        env:
+          EXEWRAP_BIN_DIR: target/${{ matrix.target }}/release
         run: ./tests/smoke-windows.ps1
 
       - name: Upload CI binaries
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ExeWrap-${{ matrix.label }}
           path: |
-            zig-out/bin/ExeWrap-console.exe
-            zig-out/bin/ExeWrap-windowed.exe
-            zig-out/bin/ExeWrap-stamper.exe
+            target/${{ matrix.target }}/release/ExeWrap-console.exe
+            target/${{ matrix.target }}/release/ExeWrap-windowed.exe
+            target/${{ matrix.target }}/release/ExeWrap-stamper.exe
           if-no-files-found: error
